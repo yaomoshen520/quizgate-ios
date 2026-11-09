@@ -15,7 +15,7 @@ settings:
     # App Group 与后端地址只在这里定义一次，由各 target 的 Info.plist 用 $(…) 取。
     # 换环境改这两行即可，不要去改 plist。
     QUIZGATE_APP_GROUP: group.com.quizgate.ios
-    QUIZGATE_API_BASE: "http://192.168.1.76:8080"
+    QUIZGATE_API_BASE: "http://101.35.194.117:53600"
   configs:
     Debug:
       SWIFT_OPTIMIZATION_LEVEL: "-Onone"
@@ -126,6 +126,12 @@ targets:
         # 「回调了但上报发不出去」和「根本没回调」在服务端长得一模一样。
         # 只有 Monitor 需要它：另外两个 extension 只往 Outbox 落盘，由主 App 带着地址补发。
         QUIZGATE_API_BASE: $(QUIZGATE_API_BASE)
+        # 主 App 那一项不会传给扩展：每份 Info.plist 各管各的 bundle。
+        # 后端地址现在是公网明文 HTTP，这里缺一次例外，Monitor 的上报就可能整个被 ATS 拦掉，
+        # 而拦掉的样子和「根本没回调」在服务端一模一样。
+        # （ATS 到底按 App 还是按扩展生效我没拿到官方原文，属推断；补上这一项两种情况都安全。）
+        NSAppTransportSecurity:
+          NSAllowsArbitraryLoads: true
         NSExtension:
           NSExtensionPointIdentifier: com.apple.deviceactivity.monitor-extension
           NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).DeviceActivityMonitorExtension
