@@ -80,14 +80,42 @@ final class GatePolicyTests: XCTestCase {
         XCTAssertEqual(GatePolicy.decide(state, nowMs: now), .allow(.underThreshold))
     }
 
+    /// 日限额不再由 ledger.playedMs 推：playedMs 每轮清零，用它当「今天一共玩了多久」
+    /// 等于答对一次就把当天的账抹平，日限额永远到不了。它只能来自横跨全天的那条活动。
+    func testDailyLimitComesFromTheDayFlagNotTheCycleLedger() {
+        var state = approvedState(threshold: 30, daily: 60, playedMs: 0)
+        state.dailyLimitReachedOnDay = GatePolicy.dayIndex(now)
+        XCTAssertEqual(GatePolicy.decide(state, nowMs: now), .shield(.dailyLimitReached))
+    }
+
     func testDailyLimitTakesPrecedenceOverThreshold() {
-        let state = approvedState(threshold: 30, daily: 60, playedMs: 60 * 60_000)
+        var state = approvedState(threshold: 30, daily: 60, playedMs: 60 * 60_000)
+        state.dailyLimitReachedOnDay = GatePolicy.dayIndex(now)
         XCTAssertEqual(GatePolicy.decide(state, nowMs: now), .shield(.dailyLimitReached))
     }
 
     func testZeroDailyLimitMeansNoDailyCap() {
-        let state = approvedState(threshold: 30, daily: 0, playedMs: 29 * 60_000)
+        var state = approvedState(threshold: 30, daily: 0, playedMs: 29 * 60_000)
+        state.dailyLimitReachedOnDay = GatePolicy.dayIndex(now)
+        XCTAssertEqual(GatePolicy.decide(state, nowMs: now), .allow(.underThreshold),
+                       "dailyLimitMinutes=0 表示不限，那这条标记就不该有拦人的效力")
+    }
+
+    /// 隔天的旧标记必须失效：否则一次「今天用完了」会把这台机器永久锁死，
+    /// 家长第二天看到的是一个再也答不开的门。
+    func testStaleDailyLimitFlagFromYesterdayDoesNotShield() {
+        var state = approvedState(threshold: 30, daily: 60, playedMs: 0)
+        state.dailyLimitReachedOnDay = GatePolicy.dayIndex(now) - 1
         XCTAssertEqual(GatePolicy.decide(state, nowMs: now), .allow(.underThreshold))
+    }
+
+    /// 放行窗仍然排在日限额前面（沿用改动前的顺序，不是这次新定的语义）：
+    /// 日限额已到的那一刻答对一道题，买回的是一个阈值长度的窗口，不是立刻再拦。
+    func testDailyLimitYieldsToAFreshUnlockWindow() {
+        var state = approvedState(threshold: 30, daily: 60, playedMs: 0)
+        state.dailyLimitReachedOnDay = GatePolicy.dayIndex(now)
+        state.ledger.unlockUntilMs = now + 60_000
+        XCTAssertEqual(GatePolicy.decide(state, nowMs: now), .allow(.quizPassed))
     }
 
     // MARK: - 答对放行窗口
@@ -124,6 +152,33 @@ final class GatePolicyTests: XCTestCase {
     }
 
     // MARK: - 回调去重与幂等
+
+    /// 2026-11-09「答对之后当天再也不落盾」那条 bug 的回归。
+    ///
+    /// processedEventIds 挂在 SharedState 上，而 startNewCycle 只换 ledger，
+    /// 所以账本清零之后**同一批事件名重放是不算数的**。重新落盾的唯一出路是
+    /// 新一轮换一套事件 id —— 现在由 MonitoringController 按本轮起点毫秒生成活动名。
+    /// 下面两组断言是一对的：旧名重放必须加不回时长，新名必须能重新跨过阈值。
+    /// 只有其中一半的话，这个测试自己就是假绿的。
+    func testNewRoundNeedsFreshEventIdsBecauseProcessedSetSurvivesTheReset() {
+        let rule = RuleState(thresholdMinutes: 1, dailyLimitMinutes: 120,
+                             graceMinutes: 2, enabled: true, version: 1)
+        var state = approvedState(threshold: 1, daily: 120)
+        state = GatePolicy.accumulate(state, thresholdMinutes: 1, eventId: "quizgate.c1|step-0|5")
+        XCTAssertEqual(GatePolicy.decide(state, nowMs: now), .shield(.thresholdReached))
+
+        state.ledger = GatePolicy.startNewCycle(afterCorrectAt: now, rule: rule)
+        let afterCorrectAt = now + 61_000   // 放行窗（1 分钟）已过
+        XCTAssertEqual(GatePolicy.decide(state, nowMs: afterCorrectAt), .allow(.underThreshold))
+
+        let replay = GatePolicy.accumulate(state, thresholdMinutes: 1, eventId: "quizgate.c1|step-0|5")
+        XCTAssertEqual(replay.ledger.playedMs, 0, "上一轮的事件名重放不能再算一次时长")
+        XCTAssertEqual(GatePolicy.decide(replay, nowMs: afterCorrectAt), .allow(.underThreshold))
+
+        let nextRound = GatePolicy.accumulate(state, thresholdMinutes: 1, eventId: "quizgate.c2|step-0|5")
+        XCTAssertEqual(nextRound.ledger.playedMs, 60_000)
+        XCTAssertEqual(GatePolicy.decide(nextRound, nowMs: afterCorrectAt), .shield(.thresholdReached))
+    }
 
     func testSameEventIdDoesNotDoubleCount() {
         let state = approvedState()

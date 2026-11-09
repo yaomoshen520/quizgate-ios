@@ -60,15 +60,24 @@ public enum GatePolicy {
         if let until = state.ledger.unlockUntilMs, nowMs < until {
             return .allow(.quizPassed)
         }
-        let played = state.ledger.playedMs
-        if rule.dailyLimitMinutes > 0, played >= Int64(rule.dailyLimitMinutes) * 60_000 {
+        // 日限额走系统那个横跨全天的活动（quizgate.day）报回来的标记，
+        // 不再用 ledger.playedMs 推：playedMs 每轮清零，拿它当「今天一共玩了多久」
+        // 是错的——答对一次就把当天的累计抹平了，日限额永远到不了。
+        // 刻意的语义（沿用改之前的顺序，不是这次新定的）：日限额已在 unlock 之后判，
+        // 所以「今天用完了」仍然允许刚答对的那一道题买回一个阈值长度的窗口。
+        if rule.dailyLimitMinutes > 0, state.dailyLimitReachedOnDay == Self.dayIndex(nowMs) {
             return .shield(.dailyLimitReached)
         }
+        let played = state.ledger.playedMs
         if played >= Int64(rule.thresholdMinutes) * 60_000 {
             return .shield(.thresholdReached)
         }
         return .allow(.underThreshold)
     }
+
+    /// 把毫秒切成「天」的序号。UTC 日界，和事件去重键用同一粒度，
+    /// 免得两处一个按 UTC 一个按本地时区，日限额在凌晨那几小时时灵时不灵。
+    public static func dayIndex(_ ms: Int64) -> Int64 { ms / 86_400_000 }
 
     /// 答对之后开新一轮。对齐 Android：答对是**本轮计时清零**，不是「告诉你答案」。
     ///

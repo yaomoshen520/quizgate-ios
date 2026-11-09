@@ -43,6 +43,42 @@ final class SharedStateTests: XCTestCase {
         XCTAssertEqual(loaded, state)
     }
 
+    /// 老 payload 没有这两个键也必须解得出来（monitoringActivity / dailyLimitReachedOnDay
+    /// 是后加的，所以它们必须是可选的）。
+    ///
+    /// 为什么单独测这一条：schemaVersion 停在 1，而版本不符走的是 .corrupt，
+    /// corrupt 分支永远不会重写状态。如果这两个字段写成非可选，升级后第一次
+    /// load 就判 corrupt，那台设备的闸门会卡在旧状态上直到重装——
+    /// 现场表现正好就是本次要修的那个「盾牌永远不来」。
+    func testPayloadWithoutTheNewOptionalKeysStillDecodes() throws {
+        var state = SharedState(installId: "install-old")
+        state.deviceToken = "token-old"
+        state.ledger.playedMs = 120_000
+        let encoded = try JSONSerialization.jsonObject(with: JSONEncoder().encode(state))
+            as! [String: Any]
+        var stripped = encoded
+        stripped.removeValue(forKey: "monitoringActivity")
+        stripped.removeValue(forKey: "dailyLimitReachedOnDay")
+        XCTAssertNil(stripped["monitoringActivity"])
+        XCTAssertNil(stripped["dailyLimitReachedOnDay"])
+        XCTAssertNotNil(stripped["schemaVersion"], "反例前提：这仍是当前版本的 payload，不是靠版本不符混过去的")
+        XCTAssertNotNil(stripped["installId"], "反例前提：除了那两个键，payload 本身是完整的")
+        defaults.set(try JSONSerialization.data(withJSONObject: stripped),
+                     forKey: SharedState.storageKey)
+
+        guard case .ok(let loaded) = StateStore.load(from: defaults) else {
+            return XCTFail("缺新键的老 payload 必须照常解出来，不能判 corrupt")
+        }
+        XCTAssertNil(loaded.monitoringActivity)
+        XCTAssertNil(loaded.dailyLimitReachedOnDay)
+        XCTAssertEqual(loaded.deviceToken, "token-old")
+        XCTAssertEqual(loaded.ledger.playedMs, 120_000)
+
+        // 另一半反例：如果哪天有人把它写成「缺键就当 corrupt」，这一条会红。
+        XCTAssertTrue(StateStore.save(loaded, to: defaults))
+        XCTAssertEqual(StateStore.load(from: defaults), .ok(loaded))
+    }
+
     func testGarbageBytesAreCorruptNotCrash() {
         defaults.set(Data([0x00, 0xFF, 0x13, 0x37]), forKey: SharedState.storageKey)
         guard case .corrupt = StateStore.load(from: defaults) else {

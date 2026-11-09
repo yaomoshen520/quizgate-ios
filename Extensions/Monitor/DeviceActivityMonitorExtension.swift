@@ -21,11 +21,21 @@ final class DeviceActivityMonitorExtension: DeviceActivityMonitor {
 
     override func eventDidReachThreshold(_ event: DeviceActivityEvent.Name,
                                          activity: DeviceActivityName) {
-        // 事件按「活动名 + 事件名 + 天」去重。schedule 是每日重复的，
-        // 天粒度足以区分两轮，又不需要额外往共享状态里塞区间起点。
+        // 日限额那条活动写的是「今天用完了」这个事实，不是时长。
+        // 它不进去重集：标记本身就是幂等的（同一个日序号写两次同一个值），
+        // 而去重集是有上限的滚动窗口，把日限额也塞进去会有一天被挤掉的空间。
+        if activity.rawValue == MonitoringNames.dayActivity {
+            StateStore.mutate { state in
+                state.dailyLimitReachedOnDay = GatePolicy.dayIndex(state.nowMs())
+            }
+            recompute(reason: "eventDidReachThreshold(dailyLimit)")
+            return
+        }
+
+        // 事件按「活动名 + 事件名 + 天」去重。活动名带本轮起点毫秒，
+        // 所以答对开新一轮之后是全新的一批 id，不会再被上一轮的记录吃掉。
         let result = StateStore.mutate { state in
-            let day = state.nowMs() / 86_400_000
-            let eventId = "\(activity.rawValue)|\(event.rawValue)|\(day)"
+            let eventId = "\(activity.rawValue)|\(event.rawValue)|\(GatePolicy.dayIndex(state.nowMs()))"
             let step = state.rule?.thresholdMinutes ?? 0
             state = GatePolicy.accumulate(state, thresholdMinutes: step, eventId: eventId)
         }

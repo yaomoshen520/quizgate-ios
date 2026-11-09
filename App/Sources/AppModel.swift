@@ -28,6 +28,10 @@ final class AppModel: ObservableObject {
     private var heartbeatTask: Task<Void, Never>?
     private var signal: DarwinSignal?
 
+    /// 一轮监控区间的寿命上界：本轮 schedule 最长寿到当天 23:59，所以超过 20 小时
+    /// 就一定已经过去了，该重配。ensureMonitoringArmed 用它判旧。
+    private static let monitoringCycleHorizonMs: Int64 = 20 * 3_600_000
+
     var api: QuizGateAPI? {
         guard let base = AppGroup.apiBase else { return nil }
         return QuizGateAPI(base: base)
@@ -42,8 +46,29 @@ final class AppModel: ObservableObject {
     func onAppear() {
         reload()
         startObserving()
+        ensureMonitoringArmed()
         Task { await enrollIfNeeded() }
         startHeartbeat()
+    }
+
+    /// 前台补一次体检：本轮大概还活着就不动，只有确认过期/没记录才重配。
+    ///
+    /// 为什么不能无条件重配：每轮一个新活动名 = 系统计数器从头开始，
+    /// 「打开 App 就重新计时」如果成立，孩子反复点开我们的 App 就能让阈值永远攒不满。
+    /// 重配只该由三件事触发：家长改了规则、选完要管的 App、答对开新一轮。
+    ///
+    /// 判据用**轮次年龄**而不是系统的活动列表：getAllActiveActivities 在侧载环境
+    /// 读得准不准我们没证过，一旦它误报「没挂上」而重配又照它走，误报就成了绕过口子。
+    /// 本轮区间最长寿到当天 23:59，所以 20 小时是「它必然已经过去了」的上界。
+    private func ensureMonitoringArmed() {
+        // 还没拿到规则就先什么都不做：enroll/心跳拿到规则之后自己会重配。
+        // 这里不重配是为了别在首次安装就把首页写成「家长关掉了闸门」那种误导话。
+        guard state.rule != nil else { return }
+        if let started = state.monitoringStartedAtMs, state.monitoringActivity != nil {
+            let ageMs = state.nowMs() - started
+            if ageMs >= 0 && ageMs < Self.monitoringCycleHorizonMs { return }
+        }
+        reconfigureMonitoring()
     }
 
     func onDisappear() {
@@ -135,23 +160,60 @@ final class AppModel: ObservableObject {
     }
 
     func reconfigureMonitoring() {
+        // 先记下这一轮的起始时刻：活动名是拿它生成的，两者必须成对落盘，
+        // 否则重配失败时状态里会留下一条再也 stop 不掉的孤儿活动名。
+        let startedAtMs = state.nowMs()
         do {
-            let result = try monitoring.reconfigure(rule: state.rule, selectionData: state.selectionData)
+            let result = try monitoring.reconfigure(
+                rule: state.rule, selectionData: state.selectionData,
+                previousActivity: state.monitoringActivity, nowMs: startedAtMs)
             switch result {
-            case .started(let step, let count):
-                monitoringNote = step > (state.rule?.thresholdMinutes ?? 0)
-                    ? "系统最小粒度是 \(MonitoringController.minimumStepMinutes) 分钟，已按 \(step) 分钟阶梯监控（\(count) 档）"
-                    : "已按 \(step) 分钟阶梯监控（\(count) 档）"
+            case .started(let step, let count, let activity, let armed):
+                state.monitoringActivity = activity
+                state.monitoringStartedAtMs = startedAtMs
+                monitoringNote = "已按 \(step) 分钟阶梯监控（\(count) 档，本轮 \(activity)）"
+                if !armed {
+                    // 调用没报错、系统没登记 —— 这一句是本环境最难查的那类故障唯一的读数点。
+                    monitoringNote = "系统没登记这轮监控（\(activity)）：配置调用没报错，但活动列表里查不到它，闸门可能不会触发"
+                    state.recordFault(monitoringNote ?? "系统没登记这轮监控")
+                    reportGateEvent(kind: .gateInterrupted, detail: monitoringNote ?? "")
+                }
+                persist()
             case .noSelection:
+                state.monitoringActivity = nil
+                state.monitoringStartedAtMs = nil
+                persist()
                 monitoringNote = "还没选要管的 App"
             case .ruleDisabled:
+                state.monitoringActivity = nil
+                state.monitoringStartedAtMs = nil
+                persist()
                 monitoringNote = "家长关掉了闸门，或阈值是 0"
             }
         } catch {
             monitoringNote = "监控配置失败：\(error.localizedDescription)"
             state.recordFault(monitoringNote ?? "监控配置失败")
             persist()
+            reportGateEvent(kind: .gateInterrupted, detail: monitoringNote ?? "监控配置失败")
         }
+    }
+
+    /// 往 Outbox 存一条 gate-event，由心跳里的 flushOutbox 补发。
+    /// 走 Outbox 而不是 fire-and-forget：这条是给家长看的证据，丢一条就少一次机会。
+    private func reportGateEvent(kind: Quizgate_GateEventKind, detail: String) {
+        guard let defaults = AppGroup.defaults else { return }
+        var event = Quizgate_GateEvent()
+        event.eventID = UUID().uuidString
+        event.kind = kind
+        event.occurredAtMs = state.nowMs()
+        event.detail = detail
+        var request = Quizgate_GateEventReportRequest()
+        request.events = [event]
+        guard let payload = try? request.serializedData() else { return }
+        OutboxStore.enqueue(
+            PendingReport(path: "gate-event", payload: payload, createdAtMs: state.nowMs()),
+            to: defaults
+        )
     }
 
     // MARK: - 心跳（兜底：不赌系统回调）

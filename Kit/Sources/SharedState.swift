@@ -88,6 +88,24 @@ public struct SharedState: Codable, Equatable, Sendable {
     public var processedEventIds: [String]
     /// 人话故障记录，给首页和家长告警看。有上限，不会无限长。
     public var faults: [String]
+    /// 当前挂在系统上的那一轮监控活动名（MonitoringNames.cycleActivity）。
+    /// nil = 还没配过。重配时必须先把它 stop 掉，否则每答对一次就永久占掉
+    /// 「同时最多 20 个活动」额度里的一格，二十轮之后系统开始拒新活动。
+    ///
+    /// 这三个新字段刻意全是**可选**的：JSONDecoder 对可选键走 decodeIfPresent，
+    /// 老版本落盘的 payload 缺键也能解出来，于是不用升 schemaVersion。
+    /// 一旦写成非可选，升级后第一次 load 就是 .corrupt，而 corrupt 分支
+    /// 永远不会重写状态——那台设备会卡在旧状态上直到重装，等于把闸门自己砖了。
+    public var monitoringActivity: String?
+    /// 当日总时长用完的那一天（UTC 日序号，和事件去重键同一个粒度）。
+    /// 由 quizgate.day 的阈值事件写入，**答对不清它**——否则日限额就变成
+    /// 「每答一题送一轮」而不是「今天到此为止」。
+    public var dailyLimitReachedOnDay: Int64?
+    /// 本轮监控的开始时刻（服务器基准）。和 monitoringActivity 成对写。
+    /// 它的存在只为一件事：前台时判断「这一轮大概还在不在区间里」，
+    /// 而且判断依据是时间而不是系统的活动列表——列表读不准时，
+    /// 拿它当重配依据会把「重开 App」变成「重新计时」，那是给孩子开的门。
+    public var monitoringStartedAtMs: Int64?
 
     public init(installId: String = UUID().uuidString) {
         self.schemaVersion = Self.currentSchemaVersion
@@ -105,6 +123,9 @@ public struct SharedState: Codable, Equatable, Sendable {
         self.lastSyncAtMs = nil
         self.processedEventIds = []
         self.faults = []
+        self.monitoringActivity = nil
+        self.dailyLimitReachedOnDay = nil
+        self.monitoringStartedAtMs = nil
     }
 
     public func nowMs() -> Int64 {
