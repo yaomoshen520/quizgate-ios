@@ -33,6 +33,31 @@ public enum GateDecision: Equatable, Sendable {
         if case .shield = self { return true }
         return false
     }
+
+    /// 落盾/解盾那两档 gate-event 的一句话正文。
+    /// 主 App 和 Monitor 扩展共用这一份措辞：家长后台要按字符串判「现在是拦着还是放着」，
+    /// 两处各写一套就成了同一个状态两种说法。
+    public var shieldEvidence: String {
+        switch self {
+        case .shield(.dailyLimitReached): return "今日时长已用完，盾牌已落下"
+        case .shield(.thresholdReached): return "连续使用已到阈值，盾牌已落下"
+        case .allow(.quizPassed): return "答对了题，盾牌已解除"
+        case .allow(.disabledByParent): return "家长关掉闸门，盾牌已解除"
+        case .allow(.underThreshold): return "还没到阈值，盾牌已解除"
+        case .cannotEnforce(let why): return "闸门无法执行：\(why.rawValue)"
+        }
+    }
+
+    /// 日志里用的紧凑形态（`shield.thresholdReached` / `cannotEnforce.noRule`）。
+    /// 和 shieldEvidence 刻意分成两份：那一份是给人读的句子，这一份要能被 grep 归类，
+    /// 混用同一句中文的话，「远程翻日志」就变成了按措辞匹配。
+    public var diagToken: String {
+        switch self {
+        case .shield(let reason): return "shield.\(reason.rawValue)"
+        case .allow(let reason): return "allow.\(reason.rawValue)"
+        case .cannotEnforce(let reason): return "cannotEnforce.\(reason.rawValue)"
+        }
+    }
 }
 
 /// 纯函数策略引擎。不 import FamilyControls / ManagedSettings / DeviceActivity，

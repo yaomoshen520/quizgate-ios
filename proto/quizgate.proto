@@ -201,7 +201,11 @@ message HeartbeatReply {
 // OfflineChild 是服务端反推的（设备报不了自己的死——app 没了就没有代码在跑），只能说"可能是卸载、关机或断网"。
 // 注意这里刻意没有任何"我卸载了"的 kind：那个消息没有发送者，做成字段就是在承诺一件证明不了的事。
 
-// 与客户端 com.quizgate.spike.monitor.GateEventKind 一一对应。
+// 与客户端 com.quizgate.spike.monitor.GateEventKind 逐一对应，只有最后两档例外：
+// 那两档是 iOS 专属，Android 的枚举里没有，也不该有（它的对等物 overlay 由自己执行，
+// 当场就知道结果，走的是 OVERLAY_OFF/RESTORED 那两档）。
+// Android 侧刻意不做全量镜像：它的 toProtoKind 是穷举 when，凭空加两个永远发不出去的
+// 分支只会把「编译期提醒你漏了」这道保险换成一个假分支。
 enum GateEventKind {
   GATE_EVENT_UNSPECIFIED = 0;
   ACCESSIBILITY_OFF = 1;
@@ -215,6 +219,14 @@ enum GateEventKind {
   GAME_EXTENDED = 9;
   GAME_FORCED = 10;
   GAME_WARNING_FAILED = 11;
+  // 下面两档只有 iOS 设备会发。Android 的对等物是 overlay：执行体就是它自己，
+  // 盖没盖上屏幕它当场就知道。iOS 的盾牌由系统画，主 App 里既没有弹窗也看不到前台，
+  // 所以「阈值到了」和「盾牌真的盖上了」这两件事只有扩展进程知道。
+  // 没有这两档，服务端区分不开「监控根本没回调」和「回调了且拦住了」——
+  // 库里一片安静在这两种情况下长得一模一样，这就是 2026-11-09 那次
+  // 「时间到了孩子还能继续玩」查不下去的直接原因。
+  SHIELD_APPLIED = 12;
+  SHIELD_CLEARED = 13;
 }
 
 // event_id 由客户端生成，服务端按它去重——断网期间攒下的那几条会反复重传，
@@ -235,6 +247,42 @@ message GateEventReportReply {
   int32 accepted = 1;
   int32 duplicated = 2;
   int64 server_time_ms = 3;
+}
+
+// ── 设备诊断日志 ─────────────────────────────────────────
+// 和 gate_event 的区别是刻意划的：那一本只装「必须让家长立刻知道」的少数几件事，
+// 这一本装排查用的流水——量大、只在出问题时翻、必须能自动过期。
+// 两者混在一张表里，家长告警列表就会被诊断噪音淹没，真正掉闸那条反而看不见。
+
+enum LogLevel {
+  LEVEL_UNSPECIFIED = 0;
+  INFO = 1;
+  WARN = 2;
+  ERROR = 3;
+}
+
+// 一行。occurred_at_ms 用设备当时的时刻，不是送达时刻：排查「为什么 21:33 没拦」
+// 要的是事件顺序，而补发的旧日志送达时刻全是「刚才」。
+message DeviceLogLine {
+  int64 occurred_at_ms = 1;
+  LogLevel level = 2;
+  // 来源标签，比如 shield / monitor / api / answer。服务端不改写、不翻译。
+  string tag = 3;
+  // 客户端必须自己先脱敏再发：这一列会原样落库、原样给家长看。
+  // 令牌、绑定码、口令这类东西一旦进了日志通道，就等于把它们发给了所有能读这台设备日志的人。
+  string message = 4;
+}
+
+message DeviceLogReportRequest {
+  repeated DeviceLogLine lines = 1;
+  // 刻意没有"客户端自己丢掉过多少行"这一个字段：服务端没有地方收它，
+  // 挂了字段就是承诺一件不实现的事。丢行数的正确去处是客户端自己写一条 WARN 日志，
+  // 它走同一个通道、同一个界面，不需要协议为它开一格。
+}
+
+message DeviceLogReportReply {
+  int32 accepted = 1;
+  int64 server_time_ms = 2;
 }
 
 // ── 家长侧（app B）──────────────────────────────────────
@@ -310,6 +358,31 @@ message OfflineChildItem {
 message ListAlertsReply {
   repeated GateAlertItem alerts = 1;
   repeated OfflineChildItem offline_children = 2;
+}
+
+// 远程排查用的那一屏：按设备翻诊断流水。
+// 刻意按设备而不是按孩子——出问题的是某一台机器上的某个进程，
+// 孩子维度会把两台 iPhone 的流水搅进同一条时间线，那种图没法读。
+message DeviceLogsRequest {
+  string device_id = 1;
+  // 0 走服务端默认条数。上限只在服务端定：这一屏整批进应答，
+  // 交给客户端传就是一个可以随意调大的门。
+  int32 limit = 2;
+}
+
+message DeviceLogItem {
+  int64 occurred_at_ms = 1;
+  // 服务端什么时候收到它。和发生时刻并列给出去是有原因的：断网攒下的日志这两列能差一天，
+  // 只看一列会把"昨天发生的事"读成"刚刚发生"。
+  int64 reported_at_ms = 2;
+  LogLevel level = 3;
+  string tag = 4;
+  string message = 5;
+  string device_model = 6;
+}
+
+message DeviceLogsReply {
+  repeated DeviceLogItem lines = 1;
 }
 
 // 家长用 app A 屏幕上显示的 6 位绑定码，把设备认领到自己的child名下。

@@ -38,6 +38,8 @@ final class ShieldActionExtension: ShieldActionDelegate {
         // extension 里发网络只能 fire-and-forget，所以这里优先落盘。
         StateStore.mutate { state in
             state.recordFault("孩子点开了被挡的 App，等待答题")
+            DiagLog.record("shield", "盾牌被点开，进程 \(Bundle.main.bundleIdentifier ?? "?")",
+                           level: .warn, nowMs: state.nowMs())
             OutboxStore.enqueue(
                 PendingReport(
                     path: "gate-event",

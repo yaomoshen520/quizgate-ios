@@ -28,6 +28,10 @@ final class AppModel: ObservableObject {
     private var heartbeatTask: Task<Void, Never>?
     private var signal: DarwinSignal?
 
+    /// 上一次已经写进诊断日志的那个决策形态。
+    /// 只用来把「30 秒一次的心跳」压成「状态变了才记一行」，所以刻意不落盘。
+    private var lastLoggedDecision: String?
+
     /// 一轮监控区间的寿命上界：本轮 schedule 最长寿到当天 23:59，所以超过 20 小时
     /// 就一定已经过去了，该重配。ensureMonitoringArmed 用它判旧。
     private static let monitoringCycleHorizonMs: Int64 = 20 * 3_600_000
@@ -60,7 +64,11 @@ final class AppModel: ObservableObject {
     /// 判据用**轮次年龄**而不是系统的活动列表（center.activities）：它在侧载环境
     /// 读得准不准我们没证过，一旦它误报「没挂上」而重配又照它走，误报就成了绕过口子。
     /// 本轮区间最长寿到当天 23:59，所以 20 小时是「它必然已经过去了」的上界。
-    private func ensureMonitoringArmed() {
+    ///
+    /// 不是 private：后台重挂那条通道（`BackgroundRefresh`）跑的是同一套判据。
+    /// 两处各写一套「什么叫过期」，后台就会在前台明明正确的情况下把还活着的区间重配掉，
+    /// 而「重新计时」恰恰是孩子最想要的那件事。
+    func ensureMonitoringArmed() {
         // 还没拿到规则就先什么都不做：enroll/心跳拿到规则之后自己会重配。
         // 这里不重配是为了别在首次安装就把首页写成「家长关掉了闸门」那种误导话。
         guard state.rule != nil else { return }
@@ -78,7 +86,8 @@ final class AppModel: ObservableObject {
         signal = nil
     }
 
-    private func reload() {
+    /// 从 App Group 重新读一份现场。不是 private：后台重挂那条通道也要走同一份读法。
+    func reload() {
         switch StateStore.load() {
         case .ok(let loaded):
             state = loaded
@@ -88,6 +97,7 @@ final class AppModel: ObservableObject {
         case .corrupt(let reason):
             // 存坏了不重置：重置会抹掉 shieldApplied，等于替孩子开门。
             banner = "本地状态读不出来（\(reason)），盾牌保持原样，请连一次服务器修复"
+            DiagLog.record("state", "本地状态读不出来：" + reason + "，盾牌保持原样", level: .error)
         }
         if let restored = SelectionArchive.decode(state.selectionData) {
             selection = restored
@@ -106,7 +116,13 @@ final class AppModel: ObservableObject {
     // MARK: - 登记与绑定
 
     func enrollIfNeeded() async {
-        guard state.deviceToken == nil, let api else { return }
+        guard state.deviceToken == nil else { return }
+        guard let api else {
+            // 这是整条上报链最上游的那个 nil：build setting 没灌进 Info.plist 时，
+            // 设备会一声不响地停在「没登记」这一步，后台里连一台设备都不会出现。
+            DiagLog.record("api", "登记跳过：读不到后端地址，检查 QUIZGATE_API_BASE", level: .error)
+            return
+        }
         busy = true
         defer { busy = false }
         var request = Quizgate_EnrollRequest()
@@ -122,10 +138,15 @@ final class AppModel: ObservableObject {
             state.bindCode = reply.bindCode
             applyServerTime(reply.serverTimeMs)
             persist()
+            // 令牌和绑定码的值一律不落进日志：这一本是要出门的，
+            // 而绑定码在家长认领完成之前就是这台机器的凭据。
+            DiagLog.record("api", "登记成功，已拿到设备令牌", nowMs: state.nowMs())
         } catch let error as ReportUnavailable {
             banner = error.message
+            DiagLog.record("api", "登记没送到：" + error.message, level: .error)
         } catch {
             banner = "登记失败：\(error.localizedDescription)"
+            DiagLog.record("api", "登记异常：" + error.localizedDescription, level: .error)
         }
     }
 
@@ -134,16 +155,28 @@ final class AppModel: ObservableObject {
     func requestAuthorization() async {
         busy = true
         defer { busy = false }
+        let member: FamilyControlsMember = useChildAuthorization ? .child : .individual
         do {
-            let member: FamilyControlsMember = useChildAuthorization ? .child : .individual
             try await AuthorizationCenter.shared.requestAuthorization(for: member)
             state.authorization = AuthorizationState(raw: "approved", checkedAtMs: state.nowMs())
             persist()
             banner = nil
+            DiagLog.record("auth", "授权通过 member=" + (useChildAuthorization ? "child" : "individual"),
+                           nowMs: state.nowMs())
         } catch {
             state.authorization = AuthorizationState(raw: "denied", checkedAtMs: state.nowMs())
             state.recordFault("授权被拒：\(error.localizedDescription)")
             persist()
+            // 这一行是「FamilyControlsError error 2」这类问题唯一的远程读数：
+            // domain + code + localizedDescription 三段分开写，才能在后端按 code 归类，
+            // 也才分得开「家长点了不同意」和「侧载包的 entitlement 系统根本没认」。
+            let asNSError = error as NSError
+            DiagLog.record("auth",
+                           "授权失败 member=" + (useChildAuthorization ? "child" : "individual")
+                               + " domain=" + asNSError.domain
+                               + " code=" + String(asNSError.code)
+                               + " desc=" + error.localizedDescription,
+                           level: .error, nowMs: state.nowMs())
             // 系统那句原因必须上屏，不能只活在故障历史里：侧载（巨魔）装的包如果
             // entitlement 没被系统认下来，唯一能区分「用户拒了」和「压根没这个权限」的
             // 就是这句话，看不到就得重来一轮。
@@ -178,23 +211,34 @@ final class AppModel: ObservableObject {
                     state.recordFault(monitoringNote ?? "系统没登记这轮监控")
                     reportGateEvent(kind: .gateInterrupted, detail: monitoringNote ?? "")
                 }
+                // armed=false 在本地已经能看到，但家长不在孩子身边；这一行让它变成远程可读。
+                DiagLog.record("monitor",
+                               "重配完成 step=" + String(step) + " events=" + String(count)
+                                   + " activity=" + activity + " armed=" + String(armed),
+                               level: armed ? .info : .error, nowMs: startedAtMs)
                 persist()
             case .noSelection:
                 state.monitoringActivity = nil
                 state.monitoringStartedAtMs = nil
                 persist()
                 monitoringNote = "还没选要管的 App"
+                DiagLog.record("monitor", "重配跳过：还没有可管的 App 选择", level: .warn, nowMs: startedAtMs)
             case .ruleDisabled:
                 state.monitoringActivity = nil
                 state.monitoringStartedAtMs = nil
                 persist()
                 monitoringNote = "家长关掉了闸门，或阈值是 0"
+                DiagLog.record("monitor", "重配跳过：规则关闭或阈值为 0", nowMs: startedAtMs)
             }
         } catch {
             monitoringNote = "监控配置失败：\(error.localizedDescription)"
             state.recordFault(monitoringNote ?? "监控配置失败")
             persist()
             reportGateEvent(kind: .gateInterrupted, detail: monitoringNote ?? "监控配置失败")
+            DiagLog.record("monitor",
+                           "重配抛错 desc=" + error.localizedDescription
+                               + " activity=" + (state.monitoringActivity ?? "nil"),
+                           level: .error, nowMs: startedAtMs)
         }
     }
 
@@ -251,7 +295,9 @@ final class AppModel: ObservableObject {
             state.lastSyncAtMs = state.nowMs()
             reconcileShield()
             persist()
+            logHeartbeat(reply.ruleChanged)
             await flushOutbox()
+            await flushLogs()
         } catch let error as ReportUnavailable {
             if error.needsReenroll {
                 state.deviceToken = nil
@@ -260,9 +306,24 @@ final class AppModel: ObservableObject {
                 await enrollIfNeeded()
             }
             // 连不上不改盾牌：保持现状比瞎猜安全。
+            DiagLog.record("api", "心跳没送到：" + error.message, level: .warn)
         } catch {
             state.recordFault("心跳失败：\(error.localizedDescription)")
+            DiagLog.record("api", "心跳异常：" + error.localizedDescription, level: .error)
         }
+    }
+
+    // MARK: - 后台唤醒
+
+    /// 后台被系统叫醒时跑的那一次体检：读盘 → 心跳 → 本轮过期就重配。
+    ///
+    /// 三步全是前台已经在用的那几个方法，刻意不写「后台版」。心跳本身就把
+    /// 拉规则、重配、重算盾牌、补 Outbox、搬日志这五件事全做完了，
+    /// 后台需要多的只有最后那一道判据：孩子一整天没打开 App 时，区间已经跨过 23:59 了。
+    func backgroundCheck() async {
+        reload()
+        await heartbeat()
+        ensureMonitoringArmed()
     }
 
     // MARK: - 答题闭环
@@ -291,8 +352,13 @@ final class AppModel: ObservableObject {
             // 一道题渲染——空白题干、四个空选项，孩子点哪都算错。
             guard reply.hasQuestion else {
                 banner = "这孩子的题库里没有核对过的题，请家长先录题"
+                DiagLog.record("quiz", "取题空手而回：服务端没给题（请求 kp=" + request.knowledgePoint + "）",
+                               level: .warn, nowMs: state.nowMs())
                 return
             }
+            DiagLog.record("quiz", "取到题 id=" + reply.question.questionID
+                               + " kp=" + reply.question.knowledgePoint,
+                           nowMs: state.nowMs())
             question = reply.question
             explanation = nil
             answeredCorrect = false
@@ -335,6 +401,14 @@ final class AppModel: ObservableObject {
                 explanation = reply.explanation
             }
             persist()
+            // 记「第几个选项、对不对、答完之后盾牌还在不在」：
+            // 「答对了但屏幕还是拦着」这类问题只有对上这三段时间线才查得下去。
+            DiagLog.record("quiz",
+                           "判分 id=" + question.questionID + " picked=" + String(index)
+                               + " correct=" + String(reply.correct)
+                               + " shieldApplied=" + String(state.shieldApplied)
+                               + " unlockUntil=" + String(state.ledger.unlockUntilMs ?? -1),
+                           level: reply.correct ? .info : .warn, nowMs: state.nowMs())
         } catch let error as ReportUnavailable {
             banner = error.message
         } catch {
@@ -363,13 +437,66 @@ final class AppModel: ObservableObject {
         if !sent.isEmpty { OutboxStore.remove(ids: sent, from: defaults) }
     }
 
+    // MARK: - 诊断日志搬运
+
+    /// 把四个进程写的诊断日志搬给服务端。
+    ///
+    /// 只在心跳里搬，不是偷懒：扩展进程发网络只能 fire-and-forget，而这一条通道
+    /// 必须拿到回包里的 `accepted` 才知道从盘上删几行。删多了是丢现场，删少了是重传，
+    /// 只有拿到计数才能选前者之外的路 —— 所以它只能活在一个等得到响应的进程里。
+    private func flushLogs() async {
+        guard let token = state.deviceToken, let api else { return }
+        for batch in DiagLog.pendingBatches(totalLimit: DiagLog.batchLines) {
+            var request = Quizgate_DeviceLogReportRequest()
+            request.lines = batch.lines.map { line in
+                var out = Quizgate_DeviceLogLine()
+                out.occurredAtMs = line.occurredAtMs
+                out.level = line.level.proto
+                out.tag = line.tag
+                out.message = line.message
+                return out
+            }
+            guard !request.lines.isEmpty else { continue }
+            guard let reply: Quizgate_DeviceLogReportReply = try? await api.post(
+                "log", token: token, request: request, reply: Quizgate_DeviceLogReportReply.self
+            ) else {
+                // 连不上就停手：后面每个文件都会撞同一面墙，白跑一轮。
+                return
+            }
+            DiagLog.acknowledge(batch, count: Int(reply.accepted))
+        }
+    }
+
+    /// 心跳每 30 秒一次。无条件记一行会把 1200 行的本地上限和上传流量
+    /// 全花在「一切正常」上，而真正要留的是「这一刻闸门在拦还是在放、为什么」。
+    /// 所以只在决策变了、或家长改了规则时记。
+    private func logHeartbeat(_ ruleChanged: Bool) {
+        let token = decision.diagToken
+        guard ruleChanged || token != lastLoggedDecision else { return }
+        lastLoggedDecision = token
+        DiagLog.record("app",
+                       "心跳 decision=" + token
+                           + " ruleChanged=" + String(ruleChanged)
+                           + " playedMs=" + String(state.ledger.playedMs)
+                           + " unlockUntil=" + String(state.ledger.unlockUntilMs ?? -1)
+                           + " shieldApplied=" + String(state.shieldApplied)
+                           + " activity=" + (state.monitoringActivity ?? "nil")
+                           + " dailyDone=" + String(state.dailyLimitReachedOnDay ?? -1)
+                           + " outbox=" + String(OutboxStore.load().count),
+                       nowMs: state.nowMs())
+    }
+
     // MARK: - 内部
 
     private func reconcileShield() {
         let current = decision
         var mutated = state
+        // 返回值才是事实：reconcile 内部会先问 needsShieldWrite，一致时一个字节都不动。
+        // 拿 wantsShield 去报事件会把「本来就已经拦着」也报成一次新的落盾。
         if ShieldWriter.reconcile(decision: current, state: &mutated) {
             state = mutated
+            reportGateEvent(kind: current.wantsShield ? .shieldApplied : .shieldCleared,
+                            detail: "\(current.shieldEvidence)（主 App 重算）")
             if case .cannotEnforce(let why) = current {
                 banner = "闸门现在拦不住 App：\(label(why))"
             }

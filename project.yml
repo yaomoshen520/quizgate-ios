@@ -73,6 +73,13 @@ targets:
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
+        # 本轮区间最长寿到当天 23:59，而重配只在前台跑过 —— 这一串就是「孩子一整天
+        # 不打开 App」那条路径上的补救。标识符必须与 BackgroundRefresh.identifier 逐字相同，
+        # 不一致时 submit 只在真机后台抛错，本机和模拟器上都看不出问题。
+        # 刻意没加 UIBackgroundModes：那是 legacy background fetch 的口子，
+        # BGAppRefreshTask 只需要这一串，多声明一项等于多要一份没人用的后台时间。
+        BGTaskSchedulerPermittedIdentifiers:
+          - com.quizgate.ios.rearm
         QUIZGATE_APP_GROUP: $(QUIZGATE_APP_GROUP)
         QUIZGATE_API_BASE: $(QUIZGATE_API_BASE)
         CFBundleURLTypes:
@@ -114,6 +121,11 @@ targets:
         CFBundleShortVersionString: "0.1.0"
         CFBundleVersion: "1"
         QUIZGATE_APP_GROUP: $(QUIZGATE_APP_GROUP)
+        # 每个 extension 是一份独立的 Info.plist，不会继承 App target 里那一项；少了这行
+        # AppGroup.apiBase 在扩展进程里就是 nil，而 nil 的下游是静默 return ——
+        # 「回调了但上报发不出去」和「根本没回调」在服务端长得一模一样。
+        # 只有 Monitor 需要它：另外两个 extension 只往 Outbox 落盘，由主 App 带着地址补发。
+        QUIZGATE_API_BASE: $(QUIZGATE_API_BASE)
         NSExtension:
           NSExtensionPointIdentifier: com.apple.deviceactivity.monitor-extension
           NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).DeviceActivityMonitorExtension
