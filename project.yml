@@ -169,6 +169,30 @@ targets:
       - target: QuizGateKit
 
 schemes:
+  # 每个 target 单独一枚 scheme，CI 就能逐 target 编一遍：
+  # xcodebuild -target 不会替我们把 SPM 依赖接进 header/search path（SwiftProtobuf 会满屏找不到），
+  # 只有走 scheme 才解析；而整包一次 -scheme QuizGate 又是「第一个 target 失败就拆台」，
+  # 后面 target 的错根本来不及印出来。所以按 target 拆 scheme，一轮 CI 拿到全部错误。
+  QuizGateKit:
+    build:
+      targets:
+        QuizGateKit: all
+  QuizGateKitTests:
+    build:
+      targets:
+        QuizGateKitTests: all
+  QuizGateMonitor:
+    build:
+      targets:
+        QuizGateMonitor: all
+  QuizGateShieldConfig:
+    build:
+      targets:
+        QuizGateShieldConfig: all
+  QuizGateShieldAction:
+    build:
+      targets:
+        QuizGateShieldAction: all
   QuizGate:
     build:
       targets:

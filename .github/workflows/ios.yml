@@ -36,39 +36,62 @@ jobs:
 
       - name: Build (simulator, unsigned)
         run: |
-          # 逐个 target 编，不让第一个失败短路后面的 target：一轮 runner 要几分钟，
+          # 逐个 scheme 编，不让第一个失败短路后面的 target：一轮 runner 要几分钟，
           # 一次只暴露一个 target 的错太贵。所以这里显式关掉 -e，最后自己决定退出码。
           set +e
-          FAILED=""
-          # 阳性对照：管道的左侧失败必须被下面的状态捕获抓到，
-          # 否则这整道编译闸门就是假绿（上一轮就是这么把 6 个失败读成 6 个 OK 的）。
-          false | true
-          if [ "${PIPESTATUS[0]}" = "0" ]; then
-            echo "闸门自检失败：PIPESTATUS 吃不到退出码，本步骤的判定不可信" >&2
+
+          # 闸门自检：判定用的是命令的 $?，那它必须先能抓到一次非零。
+          # 上一轮的假绿就是因为退出码被管道吃掉了 —— 检查器自己没证据时，绿不算数。
+          false
+          selfcheck=$?
+          if [ "$selfcheck" = "0" ]; then
+            echo "闸门自检失败：退出码没抓到，本步骤的判定不可信" >&2
             exit 1
           fi
-          echo "闸门自检通过（false|true -> ${PIPESTATUS[0]}）"
+          echo "闸门自检通过（false -> $selfcheck）"
 
-          for target in QuizGateKit QuizGateKitTests QuizGateMonitor QuizGateShieldConfig QuizGateShieldAction QuizGate; do
-            echo "===== target: $target ====="
+          SCHEMES="QuizGateKit QuizGateKitTests QuizGateMonitor QuizGateShieldConfig QuizGateShieldAction QuizGate"
+
+          # 反面哨兵：上面这串 scheme 名必须真的都在工程里。
+          # 名字写错时 xcodebuild 报的是「Scheme X is not currently loaded」，
+          # 那会被读成「这个 target 编不过」，其实是我们的清单和 project.yml 脱钩了。
+          LIST=$(xcodebuild -list -project QuizGate.xcodeproj 2>&1)
+          echo "$LIST"
+          MISSING=""
+          for s in $SCHEMES; do
+            echo "$LIST" | grep -qE "^[[:space:]]+$s\$" || MISSING="$MISSING $s"
+          done
+          if [ -n "$MISSING" ]; then
+            echo "project.yml 里缺这些 scheme（不是代码错，是清单脱钩）：" $MISSING >&2
+            exit 1
+          fi
+
+          FAILED=""
+          for name in $SCHEMES; do
+            echo "===== scheme: $name ====="
+            # -target 不接 SPM 产物（SwiftProtobuf 会满屏找不到），只有 -scheme 会解析。
             xcodebuild \
               -project QuizGate.xcodeproj \
-              -target "$target" \
+              -scheme "$name" \
               -configuration Debug \
               -destination 'generic/platform=iOS Simulator' \
               -clonedSourcePackagesDirPath SourcePackages \
               CODE_SIGNING_ALLOWED=NO \
-              build 2>&1 | tail -250
-            status=${PIPESTATUS[0]}
+              build > "build-$name.log" 2>&1
+            status=$?
             if [ "$status" != "0" ]; then
-              echo "VERDICT $target FAILED (exit=$status)"
-              FAILED="$FAILED $target"
+              echo "VERDICT $name FAILED (exit=$status)"
+              # 全量日志留在文件里；这里只把诊断捞出来，去重，避免 tail 把错误挤出可见区。
+              grep -E "error:|not currently loaded" "build-$name.log" \
+                | sed -E 's#^.*quizgate-ios/##; s#^[0-9-]{10}T[0-9:.]+Z ##' \
+                | sort -u | head -40
+              FAILED="$FAILED $name"
             else
-              echo "VERDICT $target OK"
+              echo "VERDICT $name OK"
             fi
           done
           if [ -n "$FAILED" ]; then
-            echo "编译失败的 target：" $FAILED >&2
+            echo "编译失败的 scheme：" $FAILED >&2
             exit 1
           fi
 
@@ -88,10 +111,19 @@ jobs:
 
       - name: Test (pure logic only)
         run: |
+          set +e
           xcodebuild \
             -project QuizGate.xcodeproj \
             -scheme QuizGate \
             -configuration Debug \
             -destination 'platform=iOS Simulator,id=${{ steps.sim.outputs.udid }}' \
+            -clonedSourcePackagesDirPath SourcePackages \
             CODE_SIGNING_ALLOWED=NO \
-            test
+            test > test.log 2>&1
+          status=$?
+          # 同编译那步：整份日志直接刷进 CI 输出会被截断，先把诊断捞出来。
+          grep -E "error:|failed|Test Suite|Executed .* tests|not currently loaded" test.log \
+            | sed -E 's#^.*quizgate-ios/##; s#^[0-9-]{10}T[0-9:.]+Z ##' \
+            | tail -80
+          echo "TEST EXIT=$status"
+          exit "$status"
