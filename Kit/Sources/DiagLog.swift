@@ -121,12 +121,15 @@ public enum DiagLog {
     /// 应当排在主 App 21:40 的答题记录前面，不管哪个文件先被扫到。
     public static func pendingBatches(totalLimit: Int) -> [Batch] {
         guard totalLimit > 0 else { return [] }
-        let urls = (try? queue.sync(execute: { allFiles() })) ?? []
+        // 一律用尾闭包形式而不是 `sync(execute:)`：后者会选中 DispatchQueueProtocol 上
+        // 那个不抛的 `sync(execute: () -> Void)`，闭包里对 throwing 函数的调用就编不过
+        // （CI 报的是 "call can throw, but it is not marked with 'try'"）。
+        let urls = (try? queue.sync { try allFiles() }) ?? []
         var batches: [Batch] = []
         var remaining = totalLimit
         for url in urls {
             guard remaining > 0 else { break }
-            let lines = (try? queue.sync(execute: { readLines(url) })) ?? []
+            let lines = (try? queue.sync { try readLines(url) }) ?? []
             guard !lines.isEmpty else { continue }
             let take = Array(lines.prefix(remaining))
             batches.append(Batch(url: url, lines: take))
