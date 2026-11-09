@@ -119,7 +119,10 @@ final class AppModel: ObservableObject {
             state.authorization = AuthorizationState(raw: "denied", checkedAtMs: state.nowMs())
             state.recordFault("授权被拒：\(error.localizedDescription)")
             persist()
-            banner = "没有拿到屏幕使用时间授权，闸门现在拦不住任何 App"
+            // 系统那句原因必须上屏，不能只活在故障历史里：侧载（巨魔）装的包如果
+            // entitlement 没被系统认下来，唯一能区分「用户拒了」和「压根没这个权限」的
+            // 就是这句话，看不到就得重来一轮。
+            banner = "没有拿到屏幕使用时间授权，闸门现在拦不住任何 App（\(error.localizedDescription)）"
         }
     }
 

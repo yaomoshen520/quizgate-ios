@@ -88,6 +88,10 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.quizgate.ios
         CODE_SIGN_ENTITLEMENTS: App/QuizGate.entitlements
         TARGETED_DEVICE_FAMILY: "1"
+        # 图标名写死在这里，不靠工具默认值：actool 找不到叫这个名字的图标集是硬失败，
+        # 而「xcodegen 会不会替我注入 ASSETCATALOG_COMPILER_APPICON_NAME」属于工具行为，
+        # 会随版本变。名字由我们说了算，Assets 里就得有对应那套。
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
     dependencies:
       - target: QuizGateKit
       - target: QuizGateMonitor
