@@ -213,19 +213,27 @@ final class AppModel: ObservableObject {
         busy = true
         defer { busy = false }
         var request = Quizgate_NextQuestionRequest()
-        request.grade = Int32(state.childGrade)
+        // 年级一律留 0，让服务端按 child_profile 决定（它那边 grade<=0 就回退到孩子真实年级）。
+        // 设备里那个 childGrade 从来没有任何地方给它赋过值，永远是默认 3——带着 3 去抽题，
+        // 5 年级的题库一条也命中不了，服务端只会回一个没有题的应答。设备猜不到，就别猜。
         request.knowledgePoint = state.ledger.lastKnowledgePoint ?? ""
         request.excludeQuestionID = state.ledger.lastQuestionId ?? ""
         do {
             let reply: Quizgate_NextQuestionReply = try await api.post(
                 "next-question", token: token, request: request, reply: Quizgate_NextQuestionReply.self
             )
-            question = reply.question
-            explanation = nil
-            answeredCorrect = false
             applyServerTime(reply.serverTimeMs)
             state.rule = mapRule(reply.rule)
             persist()
+            // 「服务端没题可给」和「给了一道题」是两个世界：没有这道判断时，空应答会被当成
+            // 一道题渲染——空白题干、四个空选项，孩子点哪都算错。
+            guard reply.hasQuestion else {
+                banner = "这孩子的题库里没有核对过的题，请家长先录题"
+                return
+            }
+            question = reply.question
+            explanation = nil
+            answeredCorrect = false
         } catch let error as ReportUnavailable {
             banner = error.message
         } catch {
