@@ -1,8 +1,9 @@
 import FamilyControls
 import SwiftUI
+import UserNotifications
 import QuizGateKit
 
-/// 一次性本机 setup。家长拿着孩子这台手机做完这两步，之后才回 Vue 后台调时长。
+/// 一次性本机 setup。家长拿着孩子这台手机做完这几步，之后才回 Vue 后台调时长。
 ///
 /// 为什么选 App 必须在这里做：FamilyActivitySelection 里的 token 是不透明的，
 /// 不能转成 bundle id 传后端再传回来。家长在自己手机上选了也传不过来。
@@ -17,6 +18,7 @@ struct SetupView: View {
                     header
                     authorizationCard
                     selectionCard
+                    promptCard
                     bindCard
                     if let banner = model.banner {
                         BannerView(text: banner, tone: .warn)
@@ -37,7 +39,7 @@ struct SetupView: View {
             Text("把这台 iPhone 交给家长")
                 .font(.system(size: Theme.Text.title, weight: .bold))
                 .foregroundStyle(Theme.Palette.ink)
-            Text("下面两步必须在这台机器上做一次。做完之后，时长规则可以在家长后台远程改。")
+            Text("下面几步必须在这台机器上做一次。做完之后，时长规则可以在家长后台远程改。")
                 .font(.system(size: Theme.Text.body))
                 .foregroundStyle(Theme.Palette.inkSoft)
         }
@@ -83,9 +85,44 @@ struct SetupView: View {
         .card()
     }
 
+    private var promptCard: some View {
+        let status = model.promptStatus
+        let granted = status?.promptGranted == true
+        return VStack(alignment: .leading, spacing: Theme.Space.s4) {
+            StepTitle(index: 3, text: "允许答题提醒", done: granted)
+            Text("盾牌只能把 App 挡住，不会替我们说「去答题」。这一项不开，孩子看到的就是一个打不开的图标，多半直接放弃，闸门就变成了纯粹的坏体验。")
+                .font(.system(size: Theme.Text.label))
+                .foregroundStyle(Theme.Palette.inkSoft)
+            if status == .denied {
+                // 被拒过一次之后，App 里再调 requestAuthorization 永远拿回 false，
+                // 弹窗不会再出现。这一格里唯一有用的是那颗跳设置的按钮。
+                Text("提醒被拒了，系统里不会再问第二次，只能去设置里手动打开。")
+                    .font(.system(size: Theme.Text.label))
+                    .foregroundStyle(Theme.Palette.warn)
+                Button {
+                    model.openPromptSettings()
+                } label: {
+                    Text("去系统设置")
+                        .frame(maxWidth: .infinity, minHeight: Theme.Metric.controlHeight)
+                }
+                .buttonStyle(PrimaryButtonStyle())
+            } else {
+                Button {
+                    Task { await model.enablePrompt() }
+                } label: {
+                    Text(granted ? "已开启" : "开启提醒")
+                        .frame(maxWidth: .infinity, minHeight: Theme.Metric.controlHeight)
+                }
+                .buttonStyle(PrimaryButtonStyle(disabled: granted))
+                .disabled(granted)
+            }
+        }
+        .card()
+    }
+
     private var bindCard: some View {
         VStack(alignment: .leading, spacing: Theme.Space.s4) {
-            StepTitle(index: 3, text: "在家长后台输入绑定码", done: model.state.deviceBound)
+            StepTitle(index: 4, text: "在家长后台输入绑定码", done: model.state.deviceBound)
             if let code = model.state.bindCode, !model.state.deviceBound {
                 Text(code)
                     .font(.system(size: Theme.Text.hero, weight: .heavy, design: .monospaced))

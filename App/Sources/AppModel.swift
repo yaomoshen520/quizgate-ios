@@ -4,6 +4,7 @@ import Foundation
 import QuizGateKit
 import SwiftUI
 import UIKit
+import UserNotifications
 
 /// 主 App 的状态中枢。放行判定和账本**只在这里做**，extension 只负责落盾和吼一声。
 /// 原因：extension 里发网络只能 fire-and-forget，等不了响应，做不了「答对没有」这种判定。
@@ -19,6 +20,9 @@ final class AppModel: ObservableObject {
     @Published var selection = FamilyActivitySelection()
     @Published var showSelectionPicker = false
     @Published var monitoringNote: String?
+    /// 通知权限的原始状态，不是 Bool：「还没问过」还能自己弹一次窗，
+    /// 「被拒过」在 App 里永远点不出来，两格要走的两颗按钮完全不同。
+    @Published var promptStatus: UNAuthorizationStatus?
 
     /// 自测用 .individual（不需要 Family Sharing 折腾），上线用 .child。
     /// 做成开关是因为 .child 的系统弹窗要家长在同一家庭组里点，调试时很难反复触发。
@@ -31,6 +35,10 @@ final class AppModel: ObservableObject {
     /// 上一次已经写进诊断日志的那个决策形态。
     /// 只用来把「30 秒一次的心跳」压成「状态变了才记一行」，所以刻意不落盘。
     private var lastLoggedDecision: String?
+
+    /// 上一次因为盾牌状态而给孩子发过提示没有。同上，只在翻转的那一次动手，
+    /// 否则每 30 秒一次心跳就往通知中心塞一条。
+    private var lastPromptedShield: Bool?
 
     /// 一轮监控区间的寿命上界：本轮 schedule 最长寿到当天 23:59，所以超过 20 小时
     /// 就一定已经过去了，该重配。ensureMonitoringArmed 用它判旧。
@@ -49,10 +57,17 @@ final class AppModel: ObservableObject {
 
     func onAppear() {
         reload()
+        promptForShield()
         startObserving()
         ensureMonitoringArmed()
         Task { await enrollIfNeeded() }
         startHeartbeat()
+        ShieldPrompt.onOpenQuiz = { [weak self] in
+            // 通知被点开 = 孩子终于走到了答题入口。这里只取题，不解盾：
+            // 解盾必须答对，答对了才有那一份证据。
+            Task { @MainActor in await self?.loadQuestion() }
+        }
+        Task { await refreshPromptStatus() }
     }
 
     /// 前台补一次体检：本轮大概还活着就不动，只有确认过期/没记录才重配。
@@ -107,10 +122,49 @@ final class AppModel: ObservableObject {
     private func startObserving() {
         let s = DarwinSignal()
         s.onSignal = { [weak self] in
-            Task { @MainActor in self?.reload() }
+            Task { @MainActor in
+                self?.reload()
+                self?.promptForShield()
+            }
         }
         s.start()
         signal = s
+    }
+
+    // MARK: - 答题提醒
+
+    /// 盾牌一落就给孩子发一声，一解就把还没点的那条撤掉。
+    ///
+    /// 三个调用点（前台首屏、Monitor 扩展吼回来的信号、心跳）看着重复，各自都少不了：
+    /// 落盾多数由扩展写盘，主 App 只被 Darwin 信号叫醒；信号在 App 被划掉时收不到，
+    /// 就只剩心跳那一次；而首屏这次管的是「孩子自己打开 App，盾早就落着了」。
+    /// 真正的去重靠 `lastPromptedShield`，所以多调几次只会少走一步，不会多发一条。
+    func promptForShield() {
+        let now = state.shieldApplied
+        guard now != lastPromptedShield else { return }
+        lastPromptedShield = now
+        if now {
+            ShieldPrompt.fire(nowMs: state.nowMs())
+        } else {
+            ShieldPrompt.cancel()
+        }
+    }
+
+    func refreshPromptStatus() async {
+        promptStatus = await ShieldPrompt.status()
+    }
+
+    /// setup 那一屏的按钮。权限只在「从没问过」时弹一次窗，之后要么去系统设置，要么已经是开的。
+    func enablePrompt() async {
+        await ShieldPrompt.requestPermission()
+        await refreshPromptStatus()
+    }
+
+    /// 权限被拒过一次之后，App 里没有任何办法再把它要回来，只有系统设置能改。
+    /// 这一颗按钮就是那条唯一的出口。
+    func openPromptSettings() {
+        guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
+        UIApplication.shared.open(url)
     }
 
     // MARK: - 登记与绑定
@@ -163,6 +217,9 @@ final class AppModel: ObservableObject {
             banner = nil
             DiagLog.record("auth", "授权通过 member=" + (useChildAuthorization ? "child" : "individual"),
                            nowMs: state.nowMs())
+            // 顺带把答题提醒要了：这一刻家长正拿着孩子手机、正等着系统弹窗，
+            // 是全程唯一一处不用额外解释「为什么还要再点一下」的时机。
+            await enablePrompt()
         } catch {
             state.authorization = AuthorizationState(raw: "denied", checkedAtMs: state.nowMs())
             state.recordFault("授权被拒：\(error.localizedDescription)")
@@ -295,6 +352,7 @@ final class AppModel: ObservableObject {
             state.lastSyncAtMs = state.nowMs()
             reconcileShield()
             persist()
+            promptForShield()
             logHeartbeat(reply.ruleChanged)
             await flushOutbox()
             await flushLogs()

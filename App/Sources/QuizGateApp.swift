@@ -1,4 +1,5 @@
 import SwiftUI
+import UserNotifications
 import QuizGateKit
 
 @main
@@ -51,7 +52,9 @@ struct RootView: View {
 
 /// 后台重挂的接线板。除了把 BGTaskScheduler 接进来，这里刻意什么都不做 ——
 /// 闸门的所有判定都留在 AppModel 里，两处各写一套就会分叉。
-final class AppDelegate: NSObject, UIApplicationDelegate {
+/// 唯一的例外是通知的两颗回调：它们只是把「有人点了提示」这一跳转交给 AppModel，
+/// 判定和取题都不在这里发生。
+final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
 
     func application(_ application: UIApplication,
                      willFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
@@ -59,12 +62,29 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         // 表现成「task 来过又走了」，而这条通道本来就只在真机后台跑，本机永远看不见。
         BackgroundRefresh.register { task in BackgroundRefresh.run(task) }
         BackgroundRefresh.scheduleNext()
+        UNUserNotificationCenter.current().delegate = self
         return true
+    }
+
+    /// 不设 delegate 时，通知在 App 正前台时会**彻底不露脸**（系统的默认行为，不是 bug）。
+    /// 而孩子撞盾之后往往就是刚从盾牌页退回桌面、QuizGate 还在前台的那一刻。
+    func userNotificationCenter(_ center: UNUserNotificationCenter,
+                                willPresent notification: UNNotification,
+                                withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
+        completionHandler([.banner, .list])
     }
 
     /// 每次退到后台都重新排一次。调度器对同一个 identifier 的 submit 是替换语义，
     /// 所以反复提交不会攒出一串任务，只会把下一次的时间点往后推。
     func applicationDidEnterBackground(_ application: UIApplication) {
         BackgroundRefresh.scheduleNext()
+    }
+
+    /// 锁屏、通知中心、横幅三个入口的点击都汇到这一颗。
+    func userNotificationCenter(_ center: UNUserNotificationCenter,
+                                didReceive response: UNNotificationResponse,
+                                withCompletionHandler completionHandler: @escaping () -> Void) {
+        Task { @MainActor in ShieldPrompt.tappedOpen() }
+        completionHandler()
     }
 }
