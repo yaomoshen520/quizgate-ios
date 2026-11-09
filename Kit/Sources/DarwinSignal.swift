@@ -44,10 +44,12 @@ public final class DarwinSignal {
     public func stop() {
         guard observing else { return }
         observing = false
+        // AddObserver 收 CFString，RemoveObserver 收 CFNotificationName —— 同一个字符串，
+        // 两个 API 的原型不一致，少包一层就是编译期报错，别在运行时才发现观察者没摘掉。
         CFNotificationCenterRemoveObserver(
             CFNotificationCenterGetDarwinNotifyCenter(),
             Unmanaged.passUnretained(self).toOpaque(),
-            name,
+            CFNotificationName(name),
             nil
         )
         Self.registry.removeValue(forKey: ObjectIdentifier(self))
