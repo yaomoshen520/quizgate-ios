@@ -1,4 +1,5 @@
 import Foundation
+import SwiftProtobuf
 
 /// 一条还没确认送达的上报。payload 是已序列化好的 protobuf 字节，
 /// 存字节而不是存消息对象：重传时不需要再依赖生成代码的版本。
@@ -72,5 +73,16 @@ public enum OutboxStore {
             items[index].attempts += 1
         }
         save(items, to: defaults)
+    }
+
+    /// http 200 不等于这一条已经记账。只有 accepted + duplicated 覆盖到本批条数才算送达。
+    /// duplicated 也算数：重传本来就指望服务端按 event_id 去重，去重成功就是已经落库。
+    ///
+    /// 方向选错的代价不对称：按 200 就删，服务端可能一条都没归属，本地队列已经清空，
+    /// 等设备绑定之后这笔账追不回来；判严只会多留一会儿，不会丢数据。
+    public static func acknowledged(events: Int, replyData: Data) -> Bool {
+        guard events > 0 else { return false }
+        guard let reply = try? Quizgate_GateEventReportReply(serializedData: replyData) else { return false }
+        return Int(reply.accepted) + Int(reply.duplicated) >= events
     }
 }

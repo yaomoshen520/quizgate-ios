@@ -21,6 +21,10 @@ public final class QuizGateAPI {
     public static let contentType = "application/x-protobuf"
     public static let tokenHeader = "X-Quizgate-Token"
 
+    /// 单条应答的字节上界。服务端最重的应答是题库回显，也远不到这个量级；
+    /// 超过它只可能是连错了对象（网页、代理页、别人家的接口），别把整坨喂给 protobuf 解析器。
+    public static let maxResponseBytes = 2_097_152
+
     private let base: String
     private let session: URLSession
 
@@ -50,6 +54,20 @@ public final class QuizGateAPI {
             throw ReportUnavailable(message: "连不上 \(base)：\(error.localizedDescription)")
         }
         return try decode(data: data, response: response, path: path, reply: reply)
+    }
+
+    /// 补发队列用这条：payload 是入队时就已经序列化好的字节，重传时不再依赖生成代码的版本。
+    /// 返回原始应答字节，由调用方按那条路径的回包自己判「这笔账落了没有」。
+    public func postRaw(_ path: String, token: String?, body: Data) async throws -> Data {
+        let urlRequest = try makeRequest(path, token: token, body: body)
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await session.data(for: urlRequest)
+        } catch {
+            throw ReportUnavailable(message: "连不上 \(base)：\(error.localizedDescription)")
+        }
+        return try checked(data: data, response: response, path: path)
     }
 
     /// extension 用这条：发出去，最多硬等 waitMs，不等响应体、不重试。
@@ -93,14 +111,34 @@ public final class QuizGateAPI {
 
     private func decode<Reply: Message>(data: Data, response: URLResponse,
                                         path: String, reply: Reply.Type) throws -> Reply {
-        let status = (response as? HTTPURLResponse)?.statusCode ?? -1
+        let bytes = try checked(data: data, response: response, path: path)
+        do {
+            return try reply.init(serializedData: bytes)
+        } catch {
+            throw ReportUnavailable(message: "\(path) 应答不是合法 protobuf：\(error.localizedDescription)")
+        }
+    }
+
+    /// 状态码 → Content-Type → 大小上界，三关都过了才把字节交出去。
+    /// post 和 postRaw 共用这一条：补发链路单独写一份校验，迟早会和主链路对不上。
+    private func checked(data: Data, response: URLResponse, path: String) throws -> Data {
+        let http = response as? HTTPURLResponse
+        let status = http?.statusCode ?? -1
         switch status {
         case 200...299:
-            do {
-                return try Reply(serializedData: data)
-            } catch {
-                throw ReportUnavailable(message: "\(path) 应答不是合法 protobuf：\(error.localizedDescription)")
+            // 服务端每个应答都由 ProtobufHttp.reply 发出，一定带这个头。
+            // 没带就说明我们连的根本不是它，内容再像 protobuf 也不能信。
+            let mime = http?
+                .value(forHTTPHeaderField: "Content-Type")?
+                .split(separator: ";").first?
+                .trimmingCharacters(in: .whitespaces)
+            guard mime == Self.contentType else {
+                throw ReportUnavailable(message: "\(path) 回的不是 protobuf（content-type=\(mime ?? "无")）")
             }
+            guard data.count <= Self.maxResponseBytes else {
+                throw ReportUnavailable(message: "\(path) 应答 \(data.count) 字节，超过 \(Self.maxResponseBytes) 上界")
+            }
+            return data
         case 401, 403:
             throw ReportUnavailable(message: "\(path) 认定令牌无效（http=\(status)）", needsReenroll: true)
         default:

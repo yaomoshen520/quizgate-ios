@@ -346,25 +346,19 @@ final class AppModel: ObservableObject {
 
     private func flushOutbox() async {
         guard let token = state.deviceToken, let api, let defaults = AppGroup.defaults else { return }
+        // 没有归属就先不发。服务端按设备令牌记账，未绑定这台设备时事件会落成
+        // 「没有孩子档案」的行，家长认领之后追不回来；留在队列里等绑定完成，
+        // 服务端按 event_id 去重，晚发不会重复。
+        guard state.deviceBound else { return }
         let items = OutboxStore.load(from: defaults)
         guard !items.isEmpty else { return }
         var sent: Set<String> = []
         for item in items.prefix(20) {
-            guard let url = URL(string: "\(AppGroup.apiBase ?? "")/api/device/\(item.path)") else { continue }
-            var request = URLRequest(url: url)
-            request.httpMethod = "POST"
-            request.httpBody = item.payload
-            request.setValue(QuizGateAPI.contentType, forHTTPHeaderField: "Content-Type")
-            request.setValue(QuizGateAPI.contentType, forHTTPHeaderField: "Accept")
-            request.setValue(token, forHTTPHeaderField: QuizGateAPI.tokenHeader)
-            do {
-                let (_, response) = try await URLSession.shared.data(for: request)
-                if let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) {
-                    sent.insert(item.id)
-                }
-            } catch {
-                continue
-            }
+            // 入队时一条请求只装一个事件，所以这里按 1 核对回包计数。
+            guard let reply = try? await api.postRaw(item.path, token: token, body: item.payload),
+                  OutboxStore.acknowledged(events: 1, replyData: reply)
+            else { continue }
+            sent.insert(item.id)
         }
         if !sent.isEmpty { OutboxStore.remove(ids: sent, from: defaults) }
     }

@@ -80,3 +80,39 @@ X-Quizgate-Token: <enroll 拿到的设备令牌>
 401/403 收敛成「必须重新 enroll」，重试没有意义。
 心跳的 `accessibility_connected` 在 iOS 上映射成「闸门有没有能力执行」——语义等价，
 但**服务端告警文案对 iOS 设备需要另写**，不能照搬「无障碍已关闭」。
+
+## 一个仓库一个客户端
+
+| 仓库 | 端 |
+|---|---|
+| `quizgate-ios`（本仓库） | iOS 孩子端唯一事实源 |
+| `quizgate-android` | Android 孩子端 |
+| `quizgate-harmony` | 鸿蒙 NEXT 孩子端 |
+| `quizgate-server` | 后端；`proto/quizgate.proto` 是全项目协议的唯一真源 |
+| `quizgate-console` | 家长后台 |
+
+`quizgate-android` 的 `ios` 分支里曾有第二套 iOS 客户端（手写 `Proto.swift` 解码器、`Package.swift` + SPM 单 target、
+无 FamilyControls/DeviceActivity/扩展）。2026-11-09 只把它三条**语义**并进来，脚手架不并：
+
+- `QuizGateAPI.checked()`：200 之后先认 `Content-Type: application/x-protobuf`、再卡 2 MiB 大小上界，
+  才把字节交给解析器。`post` 和新增的 `postRaw`（补发队列用）共用这一条校验。
+- `OutboxStore.acknowledged(events:replyData:)`：**http 200 不等于这一条已经记账**，
+  必须 `accepted + duplicated` 覆盖到本批条数才允许出队（`duplicated` 算数，重传本就靠服务端按 `event_id` 去重）。
+- `AppModel.flushOutbox()`：`deviceBound == false` 时不发。未绑定的事件会以「没有孩子档案」落库，
+  家长认领之后追不回来；留着晚发只会多等一轮，删早了就是丢数据。
+
+没有并进来的，以及原因：
+
+- **他的 `Proto.swift` 手写解码器**：我们走 `protoc --swift_out`，生成物由 `tools/gen-proto.sh` 从服务端那份
+  `.proto` 现生成、不入库。手写解码器要自己维护字段号，正是最容易和后端对不上的那种代码。
+- **他的 `Tests/…/Fixtures/wire.json` 金样测试**：那 22 个样本是给手写解码器兜底的；
+  protoc 生成的代码不存在同一类漂移风险，真正的漂移点是「仓库里那份 `.proto` 快照过期」，
+  那个由 `gen-proto.sh -ServerRoot` 管。留作后续项，不在这轮补。
+- **他的 `normalizeAddress`**：本仓库的后端地址来自 `QUIZGATE_API_BASE`（build setting，家长不输入），
+  没有可校验的用户输入口。这同时是**一个已知缺口**：Release 包换后端地址要重新编译，
+  和 Android 那边「Release 没有设后端地址的入口」是同一个问题。
+- **`applyExtension` / `extensionStatus`（游戏延期审批）**：他那里也只是接口封装，没有用量生产者；
+  iOS 侧前台检测能力缺失（见上面硬约束 1），接上就是承诺一件证明不了的事。
+
+`usage` 路径在协议里存在，但 iOS 客户端目前**一条用量都不发**（只有 `gate-event`）。
+家长后台的 iOS 设备报表为空是预期行为，不是丢数据。

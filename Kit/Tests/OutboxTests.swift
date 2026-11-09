@@ -78,4 +78,34 @@ final class OutboxTests: XCTestCase {
         OutboxStore.enqueue(item, to: defaults)
         XCTAssertEqual(OutboxStore.load(from: defaults).first?.payload, blob)
     }
+
+    /// GateEventReportReply 的线格式手写死在这里：字段 1 = accepted，字段 2 = duplicated，都是 varint。
+    /// 故意不用生成的消息类去序列化 —— 那样字段号是从同一份 .proto 里绕出来的自证，
+    /// 手写这份字节才能真的钉住「服务端回的那几个字段号我们读对了」。
+    private func reply(accepted: Int, duplicated: Int) -> Data {
+        var bytes: [UInt8] = []
+        if accepted != 0 { bytes += [0x08, UInt8(accepted)] }
+        if duplicated != 0 { bytes += [0x10, UInt8(duplicated)] }
+        return Data(bytes)
+    }
+
+    func testAcknowledgedCountsWithAcceptedOrDuplicated() {
+        XCTAssertTrue(OutboxStore.acknowledged(events: 1, replyData: reply(accepted: 1, duplicated: 0)))
+        // 重传按 event_id 去重回 duplicated：这条已经落过账，可以出队。
+        XCTAssertTrue(OutboxStore.acknowledged(events: 1, replyData: reply(accepted: 0, duplicated: 1)))
+        XCTAssertTrue(OutboxStore.acknowledged(events: 2, replyData: reply(accepted: 1, duplicated: 1)))
+    }
+
+    /// 服务端一条都没记 = 绝不能出队。这一条是「http 200 就删」那个错误的反面。
+    func testNotAcknowledgedWhenNothingWasRecorded() {
+        XCTAssertFalse(OutboxStore.acknowledged(events: 1, replyData: reply(accepted: 0, duplicated: 0)))
+        XCTAssertFalse(OutboxStore.acknowledged(events: 2, replyData: reply(accepted: 1, duplicated: 0)))
+        XCTAssertFalse(OutboxStore.acknowledged(events: 0, replyData: reply(accepted: 9, duplicated: 9)))
+    }
+
+    /// 解不出回包就当没送达：宁可留着重传，也不能凭一份不认识的回包清队列。
+    func testGarbageReplyIsNotAcknowledged() {
+        XCTAssertFalse(OutboxStore.acknowledged(events: 1, replyData: Data([0x00, 0xFF, 0x7F])))
+        XCTAssertFalse(OutboxStore.acknowledged(events: 1, replyData: Data()))
+    }
 }
