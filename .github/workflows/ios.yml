@@ -163,6 +163,23 @@ jobs:
           grep -E "error:|failed|Test Suite|Executed .* tests|not currently loaded" test.log \
             | sed -E 's#^.*quizgate-ios/##; s#^[0-9-]{10}T[0-9:.]+Z ##' \
             | tail -80
+          if [ "$status" != "0" ]; then
+            # 单测失败也走 annotation：Actions 日志要仓库 admin 的登录态才能下载
+            # （403 是权限不是配额），而 check-runs/{id}/annotations 对公开仓库免凭据可读。
+            # 上一轮只给编译步接了这条通道，测试步红了我们照样只能干等。
+            annotate() { # annotate <原始行>
+              local esc
+              # % 与 ] 先转义再截断，否则 GitHub 会把日志内容当 workflow 命令解析。
+              esc=$(printf '%s' "$1" | tr -d '\r' | sed -e 's/%/%25/g' -e 's/]/%5D/g')
+              printf '::error title=单测诊断::%s\n' "${esc:0:280}"
+            }
+            # 口径和上面那条 grep 保持一致（外加 XCTAssert / Test Case 两型），
+            # 窄了就会出现「测试红了但一行诊断都没报」。
+            grep -E "error:|XCTAssert|Test Case .*failed|Test Suite .*failed|Executed [0-9]+ test|not currently loaded" test.log \
+              | sed -E 's#^.*quizgate-ios/##; s#^[0-9-]{10}T[0-9:.]+Z ##' \
+              | sort -u | tail -10 > test-errors.txt
+            while IFS= read -r l; do annotate "$l"; done < test-errors.txt
+          fi
           echo "TEST EXIT=$status"
           exit "$status"
 
