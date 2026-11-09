@@ -52,6 +52,7 @@ targets:
       - path: Kit/Tests
     dependencies:
       - target: QuizGateKit
+      - package: SwiftProtobuf
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.quizgate.ios.kittests
@@ -92,6 +93,10 @@ targets:
       - target: QuizGateMonitor
       - target: QuizGateShieldConfig
       - target: QuizGateShieldAction
+      # 静态库不会把自己的依赖带给链接它的 bundle：QuizGateKit 里那些 import SwiftProtobuf
+      # 的代码编得过（.a 不解析外部符号），一旦链进 bundle 就在 ld 阶段炸。
+      # 所以每个真正产出 bundle 的目标都得自己声明这枚包 —— 三个 extension 同理。
+      - package: SwiftProtobuf
 
   QuizGateMonitor:
     type: app-extension
@@ -117,6 +122,7 @@ targets:
         SKIP_INSTALL: YES
     dependencies:
       - target: QuizGateKit
+      - package: SwiftProtobuf
 
   QuizGateShieldConfig:
     type: app-extension
@@ -142,6 +148,7 @@ targets:
         SKIP_INSTALL: YES
     dependencies:
       - target: QuizGateKit
+      - package: SwiftProtobuf
 
   QuizGateShieldAction:
     type: app-extension
@@ -167,6 +174,7 @@ targets:
         SKIP_INSTALL: YES
     dependencies:
       - target: QuizGateKit
+      - package: SwiftProtobuf
 
 schemes:
   # 每个 target 单独一枚 scheme，CI 就能逐 target 编一遍：

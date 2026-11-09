@@ -81,10 +81,19 @@ jobs:
             status=$?
             if [ "$status" != "0" ]; then
               echo "VERDICT $name FAILED (exit=$status)"
-              # 全量日志留在文件里；这里只把诊断捞出来，去重，避免 tail 把错误挤出可见区。
-              grep -E "error:|not currently loaded" "build-$name.log" \
-                | sed -E 's#^.*quizgate-ios/##; s#^[0-9-]{10}T[0-9:.]+Z ##' \
+              # 先去时间戳再去路径前缀：反了的话 sed 会把整行上下文一起吃掉。
+              clean="build-$name.clean.log"
+              sed -E 's#^[0-9-]{10}T[0-9:.]+Z[[:space:]]+##; s#^.*quizgate-ios/##' "build-$name.log" > "$clean"
+              echo "--- 诊断（编译 / 依赖类） ---"
+              grep -E "error:|no such module|not currently loaded|Undefined symbol|ld: |fatal" "$clean" \
                 | sort -u | head -40
+              # 上一轮只印出 clang 那句「linker command failed」汇总，ld 真正抱怨的那几行
+              # 里没有 "error:"，被我原来的过滤条件整片漏掉 —— 检查器口径窄于事实时，
+              # 「只有汇总」会被读成「错误就这么多」。链接失败就把汇总前的 30 行原样打出来。
+              if grep -q "linker command failed" "$clean"; then
+                echo "--- 链接区（clang 汇总前 32 行，ld 原话在这里） ---"
+                grep -B32 "linker command failed" "$clean" | tail -34
+              fi
               FAILED="$FAILED $name"
             else
               echo "VERDICT $name OK"
@@ -127,3 +136,134 @@ jobs:
             | tail -80
           echo "TEST EXIT=$status"
           exit "$status"
+
+  # ------------------------------------------------------------------
+  # 真机 .ipa：给巨魔（TrollStore）侧载用。
+  # 能不走证书的原因：TrollStore 绕过的是「必须有描述文件」这一层，不是「必须有签名」，
+  # 所以这里做的是 ad-hoc 签名（identity = "-"）+ 把我们自己的 entitlements 塞进去。
+  # 证书、App Store、TestFlight 一概不碰。
+  # ------------------------------------------------------------------
+  ipa:
+    needs: build-and-test
+    runs-on: macos-15
+    timeout-minutes: 40
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: brew install xcodegen protobuf swift-protobuf
+
+      - name: Generate Swift protobuf
+        run: bash tools/gen-proto.sh
+
+      - name: Generate Xcode project
+        run: xcodegen generate --spec project.yml
+
+      - name: Build (device, unsigned)
+        run: |
+          set +e
+          # 同编译那步的规矩：判定用的是退出码，那它必须先能抓到一次非零。
+          false
+          selfcheck=$?
+          if [ "$selfcheck" = "0" ]; then
+            echo "闸门自检失败：退出码没抓到，本步骤的判定不可信" >&2
+            exit 1
+          fi
+          xcodebuild \
+            -project QuizGate.xcodeproj \
+            -scheme QuizGate \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath dd \
+            -clonedSourcePackagesDirPath SourcePackages \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build > build-device.log 2>&1
+          status=$?
+          sed -E 's#^[0-9-]{10}T[0-9:.]+Z[[:space:]]+##; s#^.*quizgate-ios/##' build-device.log > build-device.clean.log
+          grep -E "error:|no such module|Undefined symbol|ld: |fatal" build-device.clean.log | sort -u | head -40
+          echo "BUILD EXIT=$status"
+          exit "$status"
+
+      - name: Assemble Payload and ad-hoc sign
+        run: |
+          set -e
+          PROD=dd/Build/Products/Release-iphoneos
+          APP="$PROD/QuizGate.app"
+          [ -d "$APP" ] || { echo "找不到 $APP，前面那步没真产出 device 包" >&2; exit 1; }
+
+          # 三个 extension 必须在 App 的 PlugIns 里，缺任何一个装上去都是个哑闸门：
+          # 没有 monitor extension 就没有计时，没有 shield 就没有拦截。
+          # 而 project.yml 里三个 extension 目标是 SKIP_INSTALL: YES，
+          # 「依赖列了就会被嵌进去」我只是推测，没有实测过，所以这里自己搬并当场点验。
+          mkdir -p "$APP/PlugIns"
+          for spec in "QuizGateMonitor:com.quizgate.ios.monitor:Extensions/Monitor/Monitor.entitlements" \
+                      "QuizGateShieldConfig:com.quizgate.ios.shieldconfig:Extensions/ShieldConfig/ShieldConfig.entitlements" \
+                      "QuizGateShieldAction:com.quizgate.ios.shieldaction:Extensions/ShieldAction/ShieldAction.entitlements"; do
+            name=${spec%%:*}; rest=${spec#*:}; bid=${rest%%:*}; ents=${rest#*:}
+            dest="$APP/PlugIns/$name.appex"
+            if [ ! -d "$dest" ]; then
+              src=$(find "$PROD" -maxdepth 1 -name "$name.appex" -type d | head -1)
+              [ -n "$src" ] || { echo "$name.appex 根本没被产出：链接过了但没嵌，也没散件" >&2; exit 1; }
+              cp -R "$src" "$APP/PlugIns/"
+            fi
+            # extension 必须先于宿主签：签 App 时会给 PlugIns 里的内容算资源封条，
+            # 顺序反了封条就对不上，装上去就是 misconfigured bundle。
+            codesign --force --sign - --timestamp=none \
+              --entitlements "$ents" --generate-entitlement-der "$dest"
+            /usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$dest/Info.plist" | grep -qx "$bid" \
+              || { echo "$name 的 bundle id 不是 $bid" >&2; exit 1; }
+          done
+
+          codesign --force --sign - --timestamp=none \
+            --entitlements App/QuizGate.entitlements --generate-entitlement-der "$APP"
+
+          # 这一步才是「巨魔会不会给我们想要的东西」的证据面：签名后 entitlements 里
+          # 必须逐条看得见 family-controls 与 App Group。看不见就别往下打包。
+          # （grep 直接扫 codesign 的原样输出：不管它给的是 XML plist、老式 NeXT plist
+          # 还是 DER，键名都是以可打印 ASCII 存进去的，所以三种形态都能匹配上。）
+          for t in "$APP" "$APP"/PlugIns/*.appex; do
+            echo "--- entitlements: $(basename "$t") ---"
+            codesign -d --entitlements :- "$t" 2>&1 | head -60
+            ents=$(codesign -d --entitlements :- "$t" 2>&1)
+            echo "$ents" | grep -q "com.apple.developer.family-controls" \
+              || { echo "$(basename "$t") 的签名里丢了 family-controls，装了也不会有权限" >&2; exit 1; }
+            echo "$ents" | grep -q "group.com.quizgate.ios" \
+              || { echo "$(basename "$t") 的签名里丢了 App Group，主 App 与 extension 读不到同一份状态" >&2; exit 1; }
+          done
+
+          # 架构也得当场点验：巨魔装一个只有 x86_64 切片的包，报错会写成让人误以为是签名问题的样子。
+          echo "--- 宿主可执行文件架构 ---"
+          lipo -archs "$APP/QuizGate"
+          lipo -archs "$APP/QuizGate" | grep -q arm64 \
+            || { echo "产物里没有 arm64，说明这根本不是 device 包" >&2; exit 1; }
+
+      - name: Package ipa
+        run: |
+          set -e
+          rm -rf staging && mkdir -p staging/Payload
+          cp -R dd/Build/Products/Release-iphoneos/QuizGate.app staging/Payload/
+          # 只从 staging 里打包，避免把 dd 的 DerivedData 杂项和 __MACOSX 带进去。
+          ( cd staging && zip -qry ../QuizGate.ipa Payload )
+          echo "===== ipa 内容（顶层） ====="
+          unzip -l QuizGate.ipa | grep -E "Payload/QuizGate.app/$|PlugIns/.*appex/$|QuizGate.app/QuizGate$"
+          echo "===== 三个 extension 齐不齐 ====="
+          # 按 .appex 目录名去重计数：条目行里嵌套文件也带 ".appex/"，直接 grep -c 会数出几十行，
+          # 那样的「>= 3」是假的 —— 少一个 extension 也照样过。
+          names=$(unzip -l QuizGate.ipa | grep -oE 'PlugIns/[^/]+\.appex/' | sort -u)
+          echo "$names"
+          n=$(printf '%s\n' "$names" | grep -c .)
+          echo "appex 去重后：$n 个"
+          [ "$n" -eq 3 ] || { echo "ipa 里不是恰好 3 个 appex" >&2; exit 1; }
+          ls -l QuizGate.ipa
+          shasum -a 256 QuizGate.ipa
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: QuizGate-trollstore-ios
+          path: QuizGate.ipa
+          retention-days: 30
+          if-no-files-found: error
