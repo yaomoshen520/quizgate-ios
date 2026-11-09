@@ -111,7 +111,9 @@ final class MonitoringController {
         }
 
         // 回读验一次。这是「静默失败」唯一能被看见的地方，别省。
-        let armed = center.getAllActiveActivities().contains(activity)
+        // 注意 API 名字：activities 是属性（不是 getAllActiveActivities()），
+        // 它返回的是「扩展当前真的在监控的活动」，startMonitoring 不抛错不代表登记上了。
+        let armed = center.activities.contains(activity)
         return .started(stepMinutes: step, eventCount: events.count,
                         activity: activity.rawValue, armed: armed)
     }

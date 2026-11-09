@@ -57,7 +57,7 @@ final class AppModel: ObservableObject {
     /// 「打开 App 就重新计时」如果成立，孩子反复点开我们的 App 就能让阈值永远攒不满。
     /// 重配只该由三件事触发：家长改了规则、选完要管的 App、答对开新一轮。
     ///
-    /// 判据用**轮次年龄**而不是系统的活动列表：getAllActiveActivities 在侧载环境
+    /// 判据用**轮次年龄**而不是系统的活动列表（center.activities）：它在侧载环境
     /// 读得准不准我们没证过，一旦它误报「没挂上」而重配又照它走，误报就成了绕过口子。
     /// 本轮区间最长寿到当天 23:59，所以 20 小时是「它必然已经过去了」的上界。
     private func ensureMonitoringArmed() {
