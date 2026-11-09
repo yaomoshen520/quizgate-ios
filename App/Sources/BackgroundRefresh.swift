@@ -37,10 +37,10 @@ enum BackgroundRefresh {
         // 这只是「最早」，系统想给更晚就给更晚。写 15 分钟是照着社区实测的下限写的，
         // 不是承诺 —— 真机上常见的间隔远大于它。
         request.earliestBeginDate = Date(timeIntervalSinceNow: seconds)
-        if #available(iOS 17.0, *) {
-            // 重挂要拉后端拿规则、要搬日志，没网就是白跑一趟，不如让系统直接别叫醒我们。
-            request.requiresNetworkConnectivity = true
-        }
+        // 这里原本想写 requiresNetworkConnectivity = true，编不过：那两个属性只在
+        // BGProcessingTaskRequest 上，BGAppRefreshTaskRequest 只有 earliestBeginDate。
+        // 所以「没网白跑一趟」只能在运行时判：run 里第一步就是搬日志和拉规则，
+        // 连不上各自立即返回，代价是一次唤醒而不是一次卡死。
         try? BGTaskScheduler.shared.submit(request)
     }
 

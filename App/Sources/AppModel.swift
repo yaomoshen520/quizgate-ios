@@ -474,15 +474,20 @@ final class AppModel: ObservableObject {
         let token = decision.diagToken
         guard ruleChanged || token != lastLoggedDecision else { return }
         lastLoggedDecision = token
-        DiagLog.record("app",
-                       "心跳 decision=" + token
-                           + " ruleChanged=" + String(ruleChanged)
-                           + " playedMs=" + String(state.ledger.playedMs)
-                           + " unlockUntil=" + String(state.ledger.unlockUntilMs ?? -1)
-                           + " shieldApplied=" + String(state.shieldApplied)
-                           + " activity=" + (state.monitoringActivity ?? "nil")
-                           + " dailyDone=" + String(state.dailyLimitReachedOnDay ?? -1)
-                           + " outbox=" + String(OutboxStore.load().count),
+        // 字段一段段独立写，而不是一条 `+` 链拼到底：CI 上那条 8 节的链报的是
+        // "the compiler is unable to type-check this expression in reasonable time"，
+        // 拆开后每一格都是单独一次类型检查。顺序就是原来那条链的顺序。
+        let fields: [(String, String)] = [
+            ("decision", token),
+            ("ruleChanged", String(ruleChanged)),
+            ("playedMs", String(state.ledger.playedMs)),
+            ("unlockUntil", String(state.ledger.unlockUntilMs ?? -1)),
+            ("shieldApplied", String(state.shieldApplied)),
+            ("activity", state.monitoringActivity ?? "nil"),
+            ("dailyDone", String(state.dailyLimitReachedOnDay ?? -1)),
+            ("outbox", String(OutboxStore.load().count)),
+        ]
+        DiagLog.record("app", "心跳 " + fields.map { "\($0.0)=\($0.1)" }.joined(separator: " "),
                        nowMs: state.nowMs())
     }
 
