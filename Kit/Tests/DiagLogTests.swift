@@ -13,6 +13,13 @@ final class DiagLogTests: XCTestCase {
     override func setUpWithError() throws {
         directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("quizgate.diaglog.\(UUID().uuidString)", isDirectory: true)
+        // 这里必须真的把目录建出来，而不是只给一个路径。
+        // fileURL() 会顺手建目录，所以先碰 file 的用例没事；而 foreign() 是手拼路径直接写，
+        // atomic 写在父目录不存在时报的是 NSCocoaError 4「文件夹不存在」——
+        // CI 上先红的那四条（两条 pendingBatches + 两条 acknowledge）全是这一型。
+        // 扩展进程在真机上写自己那本之前也走 fileURL()，所以这条路径是测试装配缺的前置，
+        // 不是产品里的洞。
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         DiagLog.testDirectory = directory
     }
 
