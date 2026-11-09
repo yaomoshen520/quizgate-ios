@@ -40,6 +40,18 @@ jobs:
           # 一次只暴露一个 target 的错太贵。所以这里显式关掉 -e，最后自己决定退出码。
           set +e
 
+          # 把一行诊断变成一枚 annotation。为什么走 annotation 而不是日志：
+          # Actions 的日志（/actions/runs/{id}/logs 和网页里的展开）都要仓库 admin 的
+          # 登录态才能下载，而 check-runs/{id}/annotations 对公开仓库免凭据可读。
+          # 这一条通道让「构建红了但没人知道红在哪」在这台没有 Xcode 的机器上闭环。
+          annotate() { # annotate <scheme> <原始行>
+            local esc
+            # % 与 ] 必须先转义再截断：GitHub 用这两个字符切 workflow 命令，
+            # 未转义等于把日志内容当命令本身执行。
+            esc=$(printf '%s' "$2" | tr -d '\r' | sed -e 's/%/%25/g' -e 's/]/%5D/g')
+            printf '::error title=%s 编译诊断::%s\n' "$1" "${esc:0:280}"
+          }
+
           # 闸门自检：判定用的是命令的 $?，那它必须先能抓到一次非零。
           # 上一轮的假绿就是因为退出码被管道吃掉了 —— 检查器自己没证据时，绿不算数。
           false
@@ -67,6 +79,9 @@ jobs:
           fi
 
           FAILED=""
+          # annotation 的落地文件：每一枚失败 scheme 的诊断都追加到这里，
+          # 循环结束后一次性发出（见下面「编译失败的 scheme」那段）。
+          : > annotations.txt
           for name in $SCHEMES; do
             echo "===== scheme: $name ====="
             # -target 不接 SPM 产物（SwiftProtobuf 会满屏找不到），只有 -scheme 会解析。
@@ -95,12 +110,26 @@ jobs:
                 grep -B32 "linker command failed" "$clean" | tail -34
               fi
               FAILED="$FAILED $name"
+              # 同一批诊断落一份到 annotations.txt，循环结束后统一发。
+              # 不在这里直接 printf 是因为 GitHub 每个 check run 的 annotation 有上限，
+              # 六个 target 各报 10 行会把真正第一处错误挤出上限之外。
+              grep -E "error:|no such module|not currently loaded|Undefined symbol|ld: |fatal" "$clean" \
+                | sort -u | head -10 > "err-$name.txt" || true
+              while IFS= read -r e; do
+                printf '%s | %s\n' "$name" "$e" >> annotations.txt
+              done < "err-$name.txt"
             else
               echo "VERDICT $name OK"
             fi
           done
           if [ -n "$FAILED" ]; then
             echo "编译失败的 scheme：" $FAILED >&2
+            # 先报 scheme 清单再报逐行诊断：只有逐行没有 target 名的话，
+            # 拿到错误也还得再猜它编的是哪一枚产物。
+            annotate FAILED "scheme:$FAILED"
+            head -12 annotations.txt | while IFS= read -r l; do
+              annotate "$(printf '%s' "$l" | cut -d'|' -f1 | tr -d ' ')" "$l"
+            done
             exit 1
           fi
 
