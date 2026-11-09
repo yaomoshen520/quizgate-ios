@@ -1,0 +1,60 @@
+name: ios
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-and-test:
+    # 公开仓库的标准 macOS runner 免费。这一步只证明「编得过 + 纯逻辑单测过」，
+    # 不签名、不出 ipa —— 真实屏蔽与阈值回调在模拟器上测不了，必须真机。
+    runs-on: macos-15
+    timeout-minutes: 40
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: brew install xcodegen protobuf swift-protobuf
+
+      - name: Generate Swift protobuf
+        run: bash tools/gen-proto.sh
+
+      - name: Generate Xcode project
+        run: xcodegen generate --spec project.yml
+
+      - name: Build (simulator, unsigned)
+        run: |
+          xcodebuild \
+            -project QuizGate.xcodeproj \
+            -scheme QuizGate \
+            -configuration Debug \
+            -destination 'generic/platform=iOS Simulator' \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+
+      - name: Pick an available simulator
+        id: sim
+        run: |
+          UDID=$(xcrun simctl list devices available \
+            | grep -Eo 'iPhone [0-9][^(]*\([A-F0-9-]{36}\)' \
+            | head -1 \
+            | grep -Eo '[A-F0-9-]{36}')
+          if [ -z "$UDID" ]; then
+            echo "runner 上没有可用的 iPhone 模拟器" >&2
+            xcrun simctl list devices available
+            exit 1
+          fi
+          echo "udid=$UDID" >> "$GITHUB_OUTPUT"
+
+      - name: Test (pure logic only)
+        run: |
+          xcodebuild \
+            -project QuizGate.xcodeproj \
+            -scheme QuizGate \
+            -configuration Debug \
+            -destination 'platform=iOS Simulator,id=${{ steps.sim.outputs.udid }}' \
+            CODE_SIGNING_ALLOWED=NO \
+            test

@@ -1,0 +1,112 @@
+import Foundation
+
+public enum CannotEnforceReason: String, Equatable, Sendable, CaseIterable {
+    case notAuthorized
+    case noSelection
+    case noRule
+    case stateCorrupt
+}
+
+public enum ShieldReason: String, Equatable, Sendable, CaseIterable {
+    case dailyLimitReached
+    case thresholdReached
+}
+
+public enum AllowReason: String, Equatable, Sendable, CaseIterable {
+    case disabledByParent
+    case quizPassed
+    case underThreshold
+}
+
+/// 三态而不是「拦/放」两态。
+///
+/// Android 侧失效时可以 fail-closed（抢屏抢不到就卡住不放行）。iOS 侧不行：
+/// 授权被拒或没选 App 时，我们**物理上没有能力落盾**，这时说「allow」是在撒谎，
+/// 说「shield」又做不到。所以单列一档 cannotEnforce，它的唯一正确去向是
+/// 上报成闸门事件让家长看见 —— 和 Android 的「无障碍掉了」告警是同一档东西。
+public enum GateDecision: Equatable, Sendable {
+    case shield(ShieldReason)
+    case allow(AllowReason)
+    case cannotEnforce(CannotEnforceReason)
+
+    public var wantsShield: Bool {
+        if case .shield = self { return true }
+        return false
+    }
+}
+
+/// 纯函数策略引擎。不 import FamilyControls / ManagedSettings / DeviceActivity，
+/// 不读盘、不发网络、不碰单例 —— 所以能在模拟器和 CI 上真跑单测。
+///
+/// 语义逐条对齐 Android SessionTracker，两处刻意不同并已注明原因。
+public enum GatePolicy {
+
+    /// - Parameter nowMs: 已换算到服务器时间基准的当前时刻（SharedState.nowMs()）。
+    ///   显式传入而不是内部取 Date()，否则「孩子改系统时钟」这条没法测。
+    public static func decide(_ state: SharedState, nowMs: Int64) -> GateDecision {
+        guard let authorization = state.authorization, authorization.isApproved else {
+            return .cannotEnforce(.notAuthorized)
+        }
+        guard let selection = state.selectionData, !selection.isEmpty else {
+            return .cannotEnforce(.noSelection)
+        }
+        guard let rule = state.rule else {
+            return .cannotEnforce(.noRule)
+        }
+        // 对齐 Android SpikeSettings.cycleRule()：thresholdMinutes <= 0 视为不跟随服务端规则。
+        guard rule.enabled, rule.thresholdMinutes > 0 else {
+            return .allow(.disabledByParent)
+        }
+        if let until = state.ledger.unlockUntilMs, nowMs < until {
+            return .allow(.quizPassed)
+        }
+        let played = state.ledger.playedMs
+        if rule.dailyLimitMinutes > 0, played >= Int64(rule.dailyLimitMinutes) * 60_000 {
+            return .shield(.dailyLimitReached)
+        }
+        if played >= Int64(rule.thresholdMinutes) * 60_000 {
+            return .shield(.thresholdReached)
+        }
+        return .allow(.underThreshold)
+    }
+
+    /// 答对之后开新一轮。对齐 Android：答对是**本轮计时清零**，不是「告诉你答案」。
+    ///
+    /// 这里同时做两件事：账本清零 + 给一个放行窗口。窗口不是新的产品语义，
+    /// 而是防竞态 —— 清零之后要 stop→重配→start 监控，系统重新计数有延迟，
+    /// 没有这个窗口就会在重启监控的一瞬间按旧计数再落一次盾。
+    ///
+    /// 刻意**不实现 graceMinutes**：Android 的宽限是「离开监管 App 超过 N 分钟就清零」，
+    /// 前提是知道前台是哪个 App。iOS 没有这个能力，所以这一项在 iOS 上无对应物，
+    /// 不是漏做。家长后台那一项对 iOS 设备应当置灰。
+    public static func startNewCycle(afterCorrectAt nowMs: Int64, rule: RuleState) -> Ledger {
+        var ledger = Ledger()
+        ledger.unlockUntilMs = nowMs + Int64(max(rule.thresholdMinutes, 0)) * 60_000
+        return ledger
+    }
+
+    /// 阈值回调会重复来（同一个事件 id 可能触发多次），也会漏来。
+    /// 重复靠这个去重；漏来靠主 App 前台时定时拉后端重算兜底，不指望补发。
+    public static func shouldProcess(eventId: String, state: SharedState) -> Bool {
+        !eventId.isEmpty && !state.hasProcessed(eventId)
+    }
+
+    /// 把聚合阈值事件换算成账本时长。
+    ///
+    /// DeviceActivity 只告诉我们「这组 App 在这个区间里用满了 N 分钟」，
+    /// 不告诉我们当前累计了多少。所以只能按事件阶梯累加，**精度上限就是阈值粒度**。
+    /// 这也是为什么 iOS 首页的倒计时必须标成「约」，不能像 Android 那样显示到秒。
+    public static func accumulate(_ state: SharedState, thresholdMinutes: Int, eventId: String) -> SharedState {
+        var next = state
+        guard shouldProcess(eventId: eventId, state: state), thresholdMinutes > 0 else { return next }
+        next.markEventProcessed(eventId)
+        next.ledger.playedMs += Int64(thresholdMinutes) * 60_000
+        return next
+    }
+
+    /// 幂等落盾判定：只有「想要的」和「已落的」不一致时才需要写 ManagedSettingsStore。
+    /// 每个回调都重算全量再走这里，所以丢一次更新也能被下一次纠正。
+    public static func needsShieldWrite(decision: GateDecision, currentlyApplied: Bool) -> Bool {
+        decision.wantsShield != currentlyApplied
+    }
+}

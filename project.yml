@@ -1,0 +1,183 @@
+name: QuizGate
+
+options:
+  bundleIdPrefix: com.quizgate
+  deploymentTarget:
+    iOS: "16.0"
+  createIntermediateGroups: true
+  groupSortPosition: top
+
+settings:
+  base:
+    SWIFT_VERSION: "5.9"
+    CODE_SIGN_STYLE: Manual
+    DEVELOPMENT_TEAM: ""
+    # App Group 与后端地址只在这里定义一次，由各 target 的 Info.plist 用 $(…) 取。
+    # 换环境改这两行即可，不要去改 plist。
+    QUIZGATE_APP_GROUP: group.com.quizgate.ios
+    QUIZGATE_API_BASE: "http://192.168.1.76:8080"
+  configs:
+    Debug:
+      SWIFT_OPTIMIZATION_LEVEL: "-Onone"
+    Release:
+      SWIFT_OPTIMIZATION_LEVEL: "-O"
+
+packages:
+  SwiftProtobuf:
+    url: https://github.com/apple/swift-protobuf
+    from: "1.28.0"
+
+targets:
+
+  # 主 App、三个 extension 共用的业务层。做成静态库而不是 framework：
+  # extension 嵌 framework 要额外处理 embed/runpath，静态库直接链进去省事。
+  # APPLICATION_EXTENSION_API_ONLY 强制它不许碰 extension 里用不了的 API（例如 UIApplication.shared）。
+  QuizGateKit:
+    type: library.static
+    platform: iOS
+    sources:
+      - path: Kit/Sources
+    dependencies:
+      - package: SwiftProtobuf
+    settings:
+      base:
+        PRODUCT_NAME: QuizGateKit
+        APPLICATION_EXTENSION_API_ONLY: YES
+        SKIP_INSTALL: YES
+
+  QuizGateKitTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: Kit/Tests
+    dependencies:
+      - target: QuizGateKit
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.quizgate.ios.kittests
+        GENERATE_INFOPLIST_FILE: YES
+
+  QuizGate:
+    type: application
+    platform: iOS
+    sources:
+      - path: App/Sources
+      - path: App/Resources
+    info:
+      path: App/Info.plist
+      properties:
+        CFBundleDisplayName: QuizGate
+        CFBundleShortVersionString: "0.1.0"
+        CFBundleVersion: "1"
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        QUIZGATE_APP_GROUP: $(QUIZGATE_APP_GROUP)
+        QUIZGATE_API_BASE: $(QUIZGATE_API_BASE)
+        CFBundleURLTypes:
+          - CFBundleURLName: com.quizgate.ios
+            CFBundleURLSchemes:
+              - quizgate
+        # 开发期指向局域网明文 HTTP。上线前必须换成 HTTPS 并删掉这一项，
+        # 否则等于把孩子的答题流量明文送出去。
+        NSAppTransportSecurity:
+          NSAllowsArbitraryLoads: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.quizgate.ios
+        CODE_SIGN_ENTITLEMENTS: App/QuizGate.entitlements
+        TARGETED_DEVICE_FAMILY: "1"
+    dependencies:
+      - target: QuizGateKit
+      - target: QuizGateMonitor
+      - target: QuizGateShieldConfig
+      - target: QuizGateShieldAction
+
+  QuizGateMonitor:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: Extensions/Monitor
+    info:
+      path: Extensions/Monitor/Info.plist
+      properties:
+        CFBundleDisplayName: QuizGate Monitor
+        CFBundleShortVersionString: "0.1.0"
+        CFBundleVersion: "1"
+        QUIZGATE_APP_GROUP: $(QUIZGATE_APP_GROUP)
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.deviceactivity.monitor-extension
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).DeviceActivityMonitorExtension
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.quizgate.ios.monitor
+        PRODUCT_NAME: QuizGateMonitor
+        CODE_SIGN_ENTITLEMENTS: Extensions/Monitor/Monitor.entitlements
+        APPLICATION_EXTENSION_API_ONLY: YES
+        SKIP_INSTALL: YES
+    dependencies:
+      - target: QuizGateKit
+
+  QuizGateShieldConfig:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: Extensions/ShieldConfig
+    info:
+      path: Extensions/ShieldConfig/Info.plist
+      properties:
+        CFBundleDisplayName: QuizGate Shield
+        CFBundleShortVersionString: "0.1.0"
+        CFBundleVersion: "1"
+        QUIZGATE_APP_GROUP: $(QUIZGATE_APP_GROUP)
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.ManagedSettingsUI.shield-configuration-service
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).ShieldConfigurationExtension
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.quizgate.ios.shieldconfig
+        PRODUCT_NAME: QuizGateShieldConfig
+        CODE_SIGN_ENTITLEMENTS: Extensions/ShieldConfig/ShieldConfig.entitlements
+        APPLICATION_EXTENSION_API_ONLY: YES
+        SKIP_INSTALL: YES
+    dependencies:
+      - target: QuizGateKit
+
+  QuizGateShieldAction:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: Extensions/ShieldAction
+    info:
+      path: Extensions/ShieldAction/Info.plist
+      properties:
+        CFBundleDisplayName: QuizGate Shield Action
+        CFBundleShortVersionString: "0.1.0"
+        CFBundleVersion: "1"
+        QUIZGATE_APP_GROUP: $(QUIZGATE_APP_GROUP)
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.ManagedSettings.shield-action-service
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).ShieldActionExtension
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.quizgate.ios.shieldaction
+        PRODUCT_NAME: QuizGateShieldAction
+        CODE_SIGN_ENTITLEMENTS: Extensions/ShieldAction/ShieldAction.entitlements
+        APPLICATION_EXTENSION_API_ONLY: YES
+        SKIP_INSTALL: YES
+    dependencies:
+      - target: QuizGateKit
+
+schemes:
+  QuizGate:
+    build:
+      targets:
+        QuizGate: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - QuizGateKitTests
+    archive:
+      config: Release

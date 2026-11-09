@@ -1,0 +1,620 @@
+syntax = "proto3";
+
+package quizgate;
+
+option java_package = "com.quizgate.proto";
+option java_outer_classname = "Quizgate";
+option java_multiple_files = true;
+
+// 学科。与客户端 com.quizgate.spike.question.Subject 一一对应。
+enum Subject {
+  SUBJECT_UNSPECIFIED = 0;
+  MATH = 1;
+  CHINESE = 2;
+  ENGLISH = 3;
+}
+
+// ── 公共结构 ──────────────────────────────────────────────
+
+// 下发给客户端的题目。注意：不含正确答案，判分在服务端完成。
+message Question {
+  string question_id = 1;
+  Subject subject = 2;
+  int32 grade = 3;
+  string knowledge_point = 4;
+  string stem = 5;
+  repeated string options = 6;
+}
+
+// 闸门规则快照，app A 拉到本地后驱动计时与拦截。
+message RuleSnapshot {
+  int32 threshold_minutes = 1;
+  int32 daily_limit_minutes = 2;
+  int32 grace_minutes = 3;
+  repeated string watched_packages = 4;
+  bool enabled = 5;
+  int64 version = 6;
+  GameModeRule game_mode = 7;
+}
+
+message GameModeRule {
+  bool enabled = 1;
+  int32 warning_seconds = 2;
+  int32 extension_minutes = 3;
+  int32 max_extensions = 4;
+  repeated string game_packages = 5;
+}
+
+enum GameExtensionState {
+  GAME_EXTENSION_UNSPECIFIED = 0;
+  GAME_EXTENSION_PENDING = 1;
+  GAME_EXTENSION_APPROVED = 2;
+  GAME_EXTENSION_REJECTED = 3;
+  GAME_EXTENSION_APPLIED = 4;
+  GAME_EXTENSION_CLOSED = 5;
+}
+message GameExtension {
+  string request_id = 1;
+  string device_id = 2;
+  string cycle_id = 3;
+  string package_name = 4;
+  int32 extension_minutes = 5;
+  GameExtensionState state = 6;
+  int64 requested_at_ms = 7;
+  int64 decided_at_ms = 8;
+  int64 rule_version = 9;
+  string device_model = 10;
+}
+message ApplyGameExtensionRequest { string cycle_id = 1; string package_name = 2; }
+message GameExtensionStatusRequest {
+  string cycle_id = 1;
+  string applied_request_id = 2;
+  bool cancel = 3;
+}
+message ListGameExtensionsRequest { string child_id = 1; }
+message ListGameExtensionsReply { repeated GameExtension requests = 1; }
+message DecideGameExtensionRequest { string request_id = 1; bool approve = 2; }
+
+message InstalledApp {
+  string package_name = 1;
+  string label = 2;
+  bool system_game = 3;
+  // 0=自动，1=游戏并监管，2=非游戏。
+  int32 classification = 4;
+  bool is_game = 5;
+}
+
+message AppInventoryRequest {
+  bool consent = 1;
+  repeated InstalledApp apps = 2;
+  string coverage = 3;
+}
+message AppInventoryReply { int64 synced_at_ms = 1; }
+message ListAppsRequest { string child_id = 1; }
+message DeviceApps {
+  string device_id = 1;
+  string device_model = 2;
+  bool consent = 3;
+  string coverage = 4;
+  int64 synced_at_ms = 5;
+  repeated InstalledApp apps = 6;
+  string foreground_package = 7;
+  int64 observed_at_ms = 8;
+  int64 applied_rule_version = 9;
+  int32 extensions_used = 10;
+  string game_state = 11;
+}
+message ListAppsReply { repeated DeviceApps devices = 1; }
+message ClassifyAppRequest {
+  string child_id = 1;
+  string package_name = 2;
+  int32 classification = 3;
+}
+
+// ── 设备侧（app A）──────────────────────────────────────
+
+// 首次安装注册：换回设备令牌，并生成一个绑定码给家长输入。
+message EnrollRequest {
+  string install_id = 1;
+  string device_model = 2;
+  int32 android_api_level = 3;
+}
+
+message EnrollReply {
+  string device_token = 1;
+  string bind_code = 2;
+  int64 server_time_ms = 3;
+}
+
+// 取下一道题。变式题走 knowledge_point 复用同一知识点、exclude 掉刚答错的。
+message NextQuestionRequest {
+  int32 grade = 1;
+  string knowledge_point = 2;
+  string exclude_question_id = 3;
+}
+
+message NextQuestionReply {
+  Question question = 1;
+  RuleSnapshot rule = 2;
+  int64 server_time_ms = 3;
+}
+
+message AnswerRequest {
+  string question_id = 1;
+  int32 selected_index = 2;
+}
+
+// 答错时只回解析，不回正确项下标——闸门规则是"再做一道同类题"，不是"告诉你答案"。
+message AnswerReply {
+  bool correct = 1;
+  string explanation = 2;
+}
+
+// 用量上报：时长与答题数。event_id 由客户端生成，服务端按它去重。
+message UsageEvent {
+  string event_id = 1;
+  int64 occurred_at_ms = 2;
+  string app_package = 3;
+  int64 played_ms = 4;
+  int32 correct_count = 5;
+  int32 wrong_count = 6;
+  bool interception_failed = 7;
+}
+
+message UsageReportRequest {
+  repeated UsageEvent events = 1;
+}
+
+message UsageReportReply {
+  int32 accepted = 1;
+  int32 duplicated = 2;
+  int64 server_time_ms = 3;
+}
+
+// 心跳：家长侧靠它判断闸门还活着。fail-closed 告警的数据源。
+message HeartbeatRequest {
+  bool accessibility_connected = 1;
+  int64 accumulated_ms = 2;
+  // 客户端已知的规则版本，服务端据此决定要不要回传完整快照。
+  int64 known_rule_version = 3;
+  string foreground_package = 4;
+  int64 applied_rule_version = 5;
+  int32 extensions_used = 6;
+  string game_state = 7;
+  string game_cycle_id = 8;
+}
+
+message HeartbeatReply {
+  bool rule_changed = 1;
+  RuleSnapshot rule = 2;
+  int64 server_time_ms = 3;
+  // 这台设备是否已经挂到某个孩子名下。设备只有 enroll 那一次能拿到绑定码，
+  // 家长认领之后没人再通知它，手机就会一辈子把"去后台输入这六个字符"摆在首页上。
+  // 心跳是唯一稳定的往返通道，所以这个事实从这里回。
+  bool device_bound = 4;
+}
+
+// ── 拆闸门事件（孩子动手的证据）──────────────────────────
+//
+// 这一档和"失联"是两种确定性的东西，所以协议层就是分开的两份：
+// GateEvent 是设备亲口说的（它当时还活着，才报得出这条），可以写确切原因；
+// OfflineChild 是服务端反推的（设备报不了自己的死——app 没了就没有代码在跑），只能说"可能是卸载、关机或断网"。
+// 注意这里刻意没有任何"我卸载了"的 kind：那个消息没有发送者，做成字段就是在承诺一件证明不了的事。
+
+// 与客户端 com.quizgate.spike.monitor.GateEventKind 一一对应。
+enum GateEventKind {
+  GATE_EVENT_UNSPECIFIED = 0;
+  ACCESSIBILITY_OFF = 1;
+  ACCESSIBILITY_RESTORED = 2;
+  OVERLAY_OFF = 3;
+  OVERLAY_RESTORED = 4;
+  NOTIFICATIONS_OFF = 5;
+  NOTIFICATIONS_RESTORED = 6;
+  GATE_INTERRUPTED = 7;
+  GAME_WARNING = 8;
+  GAME_EXTENDED = 9;
+  GAME_FORCED = 10;
+  GAME_WARNING_FAILED = 11;
+}
+
+// event_id 由客户端生成，服务端按它去重——断网期间攒下的那几条会反复重传，
+// 不去重的话家长看到的是一模一样的告警刷屏。
+message GateEvent {
+  string event_id = 1;
+  GateEventKind kind = 2;
+  int64 occurred_at_ms = 3;
+  // 一句人话，来自设备端。服务端只限长，不改写。
+  string detail = 4;
+}
+
+message GateEventReportRequest {
+  repeated GateEvent events = 1;
+}
+
+message GateEventReportReply {
+  int32 accepted = 1;
+  int32 duplicated = 2;
+  int64 server_time_ms = 3;
+}
+
+// ── 家长侧（app B）──────────────────────────────────────
+
+message LoginRequest {
+  string username = 1;
+  string password = 2;
+}
+
+message ChildSummary {
+  string child_id = 1;
+  string display_name = 2;
+  int32 grade = 3;
+  bool device_bound = 4;
+  int64 last_heartbeat_ms = 5;
+  // 孩子手上那台机器的型号。取的是最近心跳的那台（一个孩子可能先后绑过几台）。
+  string device_model = 6;
+  // 0 表示这台设备是在 android_api_level 落库之前登记的，不是"API 等级为 0"。
+  // 界面必须按这个意思显示，否则家长看到"Android 0"会以为是台废设备。
+  int32 android_api_level = 7;
+  // 闸门还在盯着孩子吗：0=这台设备一次心跳都没打过（不知道），1=无障碍连着，2=无障碍被关了。
+  // 用三值而不是 bool，是因为"没上报过"和"上报了说是关"在家长眼里是两件事，
+  // 而库里那一列本来就是可空的。
+  int32 accessibility_state = 8;
+  // 服务端反推的失联：超过 offline_after_ms 没心跳。注意这是推断不是实证，
+  // 界面文案必须给全"卸载、关机或断网"三种可能，不能写"已卸载"。
+  bool offline = 9;
+}
+
+message LoginReply {
+  string parent_token = 1;
+  repeated ChildSummary children = 2;
+  // PARENT 或 ADMIN。前端拿它决定挂哪些路由，但真门在服务端：这个字段只是给 UI 看的，
+  // 客户端把它改掉不会让任何接口放开。
+  string role = 3;
+}
+
+// 刷新页面之后重取孩子列表。令牌活在 sessionStorage 里，孩子列表却只在登录应答里给过一次，
+// 少这一个接口，按 F5 就会把"这个账号下还没有孩子档案"谎报给一个已经有孩子的家长。
+message ListChildrenRequest {
+}
+
+message ListChildrenReply {
+  repeated ChildSummary children = 1;
+}
+
+// 家长打开后台就能看到的那一屏：顶部红条读 offline，告警列表读 alerts。
+// 两份数据放在同一个应答里，是因为它们必须来自同一次快照——分两次请求会出现"红条说失联、列表却还在报心跳"这种自相矛盾。
+message ListAlertsRequest {
+}
+
+// 设备亲口说的那一类：谁、什么时候动的手、它自己怎么描述的。
+message GateAlertItem {
+  string child_id = 1;
+  string child_name = 2;
+  GateEventKind kind = 3;
+  int64 occurred_at_ms = 4;
+  string detail = 5;
+  string device_model = 6;
+}
+
+// 服务端反推的那一类：只能说到"多久没出现"，说不出为什么。
+message OfflineChildItem {
+  string child_id = 1;
+  string child_name = 2;
+  int64 last_heartbeat_ms = 3;
+  string device_model = 4;
+  // 服务端判失联用的那个阈值，随应答一起给出去：界面写"超过 3 分钟没上报"要有依据，
+  // 不能自己抄一个数，否则改了服务端配置页面还在说老数字。
+  int64 offline_after_ms = 5;
+}
+
+message ListAlertsReply {
+  repeated GateAlertItem alerts = 1;
+  repeated OfflineChildItem offline_children = 2;
+}
+
+// 家长用 app A 屏幕上显示的 6 位绑定码，把设备认领到自己的child名下。
+message BindDeviceRequest {
+  string child_id = 1;
+  string bind_code = 2;
+}
+
+message BindDeviceReply {
+  bool bound = 1;
+  string device_id = 2;
+  string message = 3;
+}
+
+// 认领的反向动作。删档之前必须先把设备从这个名字下摘干净，所以家长要看得见"名下到底有几台、都是哪台"：
+// ChildSummary 里那个 device_model 只是"最近心跳的那一台"，拿它当删除前置条件会漏掉第二台。
+message ListChildDevicesRequest {
+  string child_id = 1;
+}
+
+message ChildDevice {
+  string device_id = 1;
+  string device_model = 2;
+  // 0 是"这台机器一次心跳都没打过"，不是一个时刻。界面必须按这个意思念。
+  int64 last_heartbeat_ms = 3;
+  // 失联是服务端反推的，口径和告警那一栏完全一致：只说明"多久没出现"，不说它被卸载了。
+  bool offline = 4;
+}
+
+message ListChildDevicesReply {
+  repeated ChildDevice devices = 1;
+}
+
+// 解绑会重新发一个绑定码：认领那一刻旧码已经被清空，不发新码这台机器就再也进不了任何人名下——
+// 那是死路，不是"解绑"。同时吊销这台设备的令牌，让它走真机验过的那条自愈路
+// （心跳 403 → 作废本地令牌 → 重新登记 → 屏幕上出现新码）。
+message UnbindDeviceRequest {
+  string device_id = 1;
+}
+
+message UnbindDeviceReply {
+  string device_model = 1;
+  // 摘掉这台之后这个孩子名下还剩几台：界面上"还要再解几台才能删"直接读这个数，不再自己数。
+  int32 remaining_devices = 2;
+  int64 server_time_ms = 3;
+}
+
+message GetRuleRequest {
+  string child_id = 1;
+}
+
+// 家长端读回当前规则。没有这一条，规则页只能显示默认值——家长以为自己是按 20 分钟设的，
+// 库里其实还是 30。写进去和读回来必须走同一个 RuleSnapshot，免得两份形状各自漂移。
+message GetRuleReply {
+  RuleSnapshot rule = 1;
+}
+
+message QuestionDraft {
+  Subject subject = 1;
+  // 留 0 表示按这个孩子的年级入库。
+  int32 grade = 2;
+  string knowledge_point = 3;
+  string stem = 4;
+  repeated string options = 5;
+  int32 correct_index = 6;
+  string explanation = 7;
+}
+
+// 家长上传自己的题库；bank_name 为空则并入该孩子的私有题库。
+message UploadBankRequest {
+  string child_id = 1;
+  string bank_name = 2;
+  repeated QuestionDraft drafts = 3;
+}
+
+message UploadBankReply {
+  int32 accepted = 1;
+  repeated string errors = 2;
+}
+
+// 家长回显自己上传过的题。只给 device 侧的 Question 多带 correct_index 和 explanation——
+// 这条路径的读者是出题的家长本人，不是孩子；孩子端走的永远是 NextQuestionReply 那份不含答案的消息。
+message ListBankRequest {
+  string child_id = 1;
+}
+
+message BankQuestion {
+  string question_id = 1;
+  Subject subject = 2;
+  int32 grade = 3;
+  string knowledge_point = 4;
+  string stem = 5;
+  repeated string options = 6;
+  int32 correct_index = 7;
+  string explanation = 8;
+  string bank_name = 9;
+  // false 表示这道题还没人能担保它的正确答案，闸门不会抽到它，只在家长的核对清单里待着。
+  bool verified = 10;
+}
+
+message ListBankReply {
+  repeated BankQuestion questions = 1;
+}
+
+// ── 拍照识题（家长拍一张卷子，识别引擎出草稿）──────────────
+//
+// 三条边界写在这里，代码别绕过：
+// 一是 image 里那几个字节只在内存里过一遍交给识别引擎，原图不入库、不落盘，库里只存识别出来的文本；
+// 二是识别结果一律先入库成"未核对"，除非服务端自己算得出来（见 CheckVerdict）；
+// 三是闸门抽题只从"已核对"里抽，所以家长核对是一道真门，不是事后翻的日志。
+
+// 只有算术题能被服务端证明：题干里读得出算式，服务端重算一遍和标注的答案比。
+enum CheckVerdict {
+  CHECK_UNSPECIFIED = 0;
+  // 服务端算出来了，而且和标注的正确项一致——这种直接入库即可用。
+  CHECK_CONFIRMED = 1;
+  // 服务端算出来了，但和标注的答案对不上：很可能就是识别错或答案错，必须人工看。
+  CHECK_MISMATCH = 2;
+  // 读不出算式（应用题、拼音、英语……），服务端证明不了，等家长核对。
+  CHECK_MANUAL = 3;
+}
+
+message ScanBankRequest {
+  string child_id = 1;
+  // 家长端已经压过一遍的图（长边 ≤1600 的 JPEG），不是手机原图。
+  bytes image = 2;
+  // image/jpeg 或 image/png。
+  string image_mime = 3;
+  // 空则并入该孩子的私有题库，和 upload-bank 同一条规则。
+  string bank_name = 4;
+}
+
+message ScannedQuestion {
+  // 已经落库的题号，家长核对/驳回要用它。
+  string question_id = 1;
+  QuestionDraft draft = 2;
+  CheckVerdict verdict = 3;
+  // 一句人话：算出来是几、和标注差在哪、或者为什么证明不了。
+  string check_note = 4;
+  bool verified = 5;
+}
+
+message ScanBankReply {
+  repeated ScannedQuestion questions = 1;
+  // 识别出来但没过字段校验的草稿，逐条说原因——和 UploadBankReply 同一个意思。
+  repeated string errors = 2;
+  // 引擎没启用、被限流、返回的不是能解析的结构时，这里给家长一句看得懂的说明。
+  string engine_message = 3;
+}
+
+message VerifyQuestionRequest {
+  string question_id = 1;
+  // true=核对通过（进闸门候选池），false=驳回（退回未核对，孩子抽不到）。
+  bool verified = 2;
+}
+
+message VerifyQuestionReply {
+  string question_id = 1;
+  bool verified = 2;
+  string message = 3;
+}
+
+message DeleteQuestionRequest {
+  string question_id = 1;
+}
+
+message DeleteQuestionReply {
+  string message = 1;
+}
+
+message SaveRuleRequest {
+  string child_id = 1;
+  RuleSnapshot rule = 2;
+}
+
+message GetReportRequest {
+  string child_id = 1;
+  int64 since_ms = 2;
+  int64 until_ms = 3;
+}
+
+message DailyStat {
+  string date = 1;
+  int64 played_ms = 2;
+  int32 correct_count = 3;
+  int32 wrong_count = 4;
+  int32 interceptions = 5;
+  int32 interception_failures = 6;
+}
+
+message GetReportReply {
+  repeated DailyStat stats = 1;
+}
+
+// ── 平台管理员侧（只有 ADMIN 令牌能用）────────────────────
+
+message AccountSummary {
+  string account_id = 1;
+  string username = 2;
+  string display_name = 3;
+  // PARENT / ADMIN。注册接口永远只会产出 PARENT，所以这里也是审计"谁越了权"的落点。
+  string role = 4;
+  int32 child_count = 5;
+}
+
+message ListAccountsRequest {
+}
+
+message ListAccountsReply {
+  repeated AccountSummary accounts = 1;
+}
+
+// ── 账号生命周期 ─────────────────────────────────────────
+
+// 自助注册：注册码是唯一那道闸，服务端永远只产出 PARENT 角色，
+// 请求里根本没有 role 字段可填——越权提权要能在协议层就不成立。
+message RegisterRequest {
+  string invite_code = 1;
+  string username = 2;
+  string password = 3;
+  string display_name = 4;
+}
+
+// 注册成功直接发令牌：省一次口令往返，也避免"注册完了还得再登一次"这种半成品流程。
+message RegisterReply {
+  string parent_token = 1;
+}
+
+message ChangePasswordRequest {
+  string old_password = 1;
+  string new_password = 2;
+}
+
+// 改密会作废此前签发的全部令牌，所以必须回一条新令牌，否则改完密码的自己也被踢下线。
+message ChangePasswordReply {
+  string parent_token = 1;
+}
+
+message CreateChildRequest {
+  string display_name = 1;
+  int32 grade = 2;
+}
+
+message CreateChildReply {
+  ChildSummary child = 1;
+}
+
+// 改昵称和年级。字段和建档案那一条一一对应，只是多了 child_id：
+// 能新建能改的入口必须是同一份校验，否则"先建后改"就成了绕过年级上限的第二条路。
+message UpdateChildRequest {
+  string child_id = 1;
+  string display_name = 2;
+  int32 grade = 3;
+}
+
+message UpdateChildReply {
+  ChildSummary child = 1;
+}
+
+message DeleteChildRequest {
+  string child_id = 1;
+}
+
+// 删档不可撤销，所以服务端把每一类删掉多少条原样报回来，界面照着念。
+// 只回一句"删除成功"是不够的：家长按下去之前得知道自己清掉的是几台设备、几条用量。
+// removed_devices 在正常路径下恒为 0——名下还挂着设备时删除会被直接拒掉。它留在这里是因为
+// "查有没有设备"和"真删"之间有一次竞争：那一秒被人认领进来一台，兜底会连着它一起清，
+// 而那必须报得出来，不能悄悄吃掉。
+message DeleteChildReply {
+  bool deleted = 1;
+  int32 removed_devices = 2;
+  int32 removed_usage_events = 3;
+  int32 removed_gate_events = 4;
+  int32 removed_questions = 5;
+}
+
+// 管理员发注册码 / 查注册码台账。
+message CreateInviteRequest {
+}
+
+message CreateInviteReply {
+  string code = 1;
+}
+
+message InviteSummary {
+  string code = 1;
+  string created_by_account_id = 2;
+  // 空串表示还没被用掉。
+  string used_by_account_id = 3;
+  int64 created_at_ms = 4;
+}
+
+message ListInvitesRequest {
+}
+
+message ListInvitesReply {
+  repeated InviteSummary invites = 1;
+}
+
+// 找回密码走这条路：没有邮件/短信通道，所以由管理员重置，家长不自助找回。
+message ResetPasswordRequest {
+  string account_id = 1;
+  string new_password = 2;
+}
+
+message ResetPasswordReply {
+  string message = 1;
+}

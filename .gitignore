@@ -1,0 +1,23 @@
+# XcodeGen 产物：工程文件由 project.yml 生成，不入仓。
+*.xcodeproj/
+*.xcworkspace/
+DerivedData/
+build/
+
+# protoc + swift-protobuf 生成物，由 tools/gen-proto.sh 现生成。
+Kit/Sources/Generated/
+
+# 签名材料：一律不进仓，CI 从 secrets 临时写入。
+*.p12
+*.mobileprovision
+*.cer
+*.pem
+AuthKey_*.p8
+secrets/
+
+# 本机配置与环境
+.DS_Store
+xcuserdata/
+*.log
+.smoke-env
+/tmp-*

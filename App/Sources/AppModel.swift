@@ -1,0 +1,343 @@
+import Combine
+import FamilyControls
+import Foundation
+import QuizGateKit
+import SwiftUI
+import UIKit
+
+/// 主 App 的状态中枢。放行判定和账本**只在这里做**，extension 只负责落盾和吼一声。
+/// 原因：extension 里发网络只能 fire-and-forget，等不了响应，做不了「答对没有」这种判定。
+@MainActor
+final class AppModel: ObservableObject {
+
+    @Published var state = SharedState()
+    @Published var busy = false
+    @Published var banner: String?
+    @Published var question: Quizgate_Question?
+    @Published var explanation: String?
+    @Published var answeredCorrect = false
+    @Published var selection = FamilyActivitySelection()
+    @Published var showSelectionPicker = false
+    @Published var monitoringNote: String?
+
+    /// 自测用 .individual（不需要 Family Sharing 折腾），上线用 .child。
+    /// 做成开关是因为 .child 的系统弹窗要家长在同一家庭组里点，调试时很难反复触发。
+    @Published var useChildAuthorization = true
+
+    private let monitoring = MonitoringController()
+    private var heartbeatTask: Task<Void, Never>?
+    private var signal: DarwinSignal?
+
+    var api: QuizGateAPI? {
+        guard let base = AppGroup.apiBase else { return nil }
+        return QuizGateAPI(base: base)
+    }
+
+    var decision: GateDecision {
+        GatePolicy.decide(state, nowMs: state.nowMs())
+    }
+
+    // MARK: - 启动
+
+    func onAppear() {
+        reload()
+        startObserving()
+        Task { await enrollIfNeeded() }
+        startHeartbeat()
+    }
+
+    func onDisappear() {
+        heartbeatTask?.cancel()
+        heartbeatTask = nil
+        signal?.stop()
+        signal = nil
+    }
+
+    private func reload() {
+        switch StateStore.load() {
+        case .ok(let loaded):
+            state = loaded
+        case .absent:
+            state = SharedState()
+            StateStore.save(state)
+        case .corrupt(let reason):
+            // 存坏了不重置：重置会抹掉 shieldApplied，等于替孩子开门。
+            banner = "本地状态读不出来（\(reason)），盾牌保持原样，请连一次服务器修复"
+        }
+        if let restored = SelectionArchive.decode(state.selectionData) {
+            selection = restored
+        }
+    }
+
+    private func startObserving() {
+        let s = DarwinSignal()
+        s.onSignal = { [weak self] in
+            Task { @MainActor in self?.reload() }
+        }
+        s.start()
+        signal = s
+    }
+
+    // MARK: - 登记与绑定
+
+    func enrollIfNeeded() async {
+        guard state.deviceToken == nil, let api else { return }
+        busy = true
+        defer { busy = false }
+        var request = Quizgate_EnrollRequest()
+        request.installID = state.installId
+        request.deviceModel = "\(UIDevice.current.model) / iOS \(UIDevice.current.systemVersion)"
+        // androidApiLevel 刻意留 0：往这个字段里塞 iOS 版本号是在协议里撒谎，
+        // 服务端要区分平台应当看 deviceModel，或者以后加一个平台字段。
+        do {
+            let reply: Quizgate_EnrollReply = try await api.post(
+                "enroll", token: nil, request: request, reply: Quizgate_EnrollReply.self
+            )
+            state.deviceToken = reply.deviceToken
+            state.bindCode = reply.bindCode
+            applyServerTime(reply.serverTimeMs)
+            persist()
+        } catch let error as ReportUnavailable {
+            banner = error.message
+        } catch {
+            banner = "登记失败：\(error.localizedDescription)"
+        }
+    }
+
+    // MARK: - 授权与选 App（一次性本机 setup）
+
+    func requestAuthorization() async {
+        busy = true
+        defer { busy = false }
+        do {
+            let member: FamilyControlsMember = useChildAuthorization ? .child : .individual
+            try await AuthorizationCenter.shared.requestAuthorization(for: member)
+            state.authorization = AuthorizationState(raw: "approved", checkedAtMs: state.nowMs())
+            persist()
+            banner = nil
+        } catch {
+            state.authorization = AuthorizationState(raw: "denied", checkedAtMs: state.nowMs())
+            state.recordFault("授权被拒：\(error.localizedDescription)")
+            persist()
+            banner = "没有拿到屏幕使用时间授权，闸门现在拦不住任何 App"
+        }
+    }
+
+    /// 家长在孩子这台机器上选完 App 之后调。
+    /// 选完必须立刻重配监控，否则系统不知道要盯哪些 App。
+    func saveSelection() {
+        state.selectionData = SelectionArchive.encode(selection)
+        persist()
+        reconfigureMonitoring()
+    }
+
+    func reconfigureMonitoring() {
+        do {
+            let result = try monitoring.reconfigure(rule: state.rule, selectionData: state.selectionData)
+            switch result {
+            case .started(let step, let count):
+                monitoringNote = step > (state.rule?.thresholdMinutes ?? 0)
+                    ? "系统最小粒度是 \(MonitoringController.minimumStepMinutes) 分钟，已按 \(step) 分钟阶梯监控（\(count) 档）"
+                    : "已按 \(step) 分钟阶梯监控（\(count) 档）"
+            case .noSelection:
+                monitoringNote = "还没选要管的 App"
+            case .ruleDisabled:
+                monitoringNote = "家长关掉了闸门，或阈值是 0"
+            }
+        } catch {
+            monitoringNote = "监控配置失败：\(error.localizedDescription)"
+            state.recordFault(monitoringNote ?? "监控配置失败")
+            persist()
+        }
+    }
+
+    // MARK: - 心跳（兜底：不赌系统回调）
+
+    private func startHeartbeat() {
+        heartbeatTask?.cancel()
+        heartbeatTask = Task { [weak self] in
+            while !Task.isCancelled {
+                await self?.heartbeat()
+                try? await Task.sleep(nanoseconds: 30_000_000_000)
+            }
+        }
+    }
+
+    func heartbeat() async {
+        guard let token = state.deviceToken, let api else { return }
+        var request = Quizgate_HeartbeatRequest()
+        // 这个字段在 Android 上叫「无障碍是否连着」。iOS 没有无障碍，
+        // 这里映射成「闸门有没有能力执行」——语义等价（闸门在不在岗），
+        // 但服务端告警文案对 iOS 设备需要另写，不能照搬「无障碍已关闭」。
+        request.accessibilityConnected = decision.wantsShield || decision == .allow(.underThreshold)
+        request.accumulatedMs = state.ledger.playedMs
+        request.knownRuleVersion = state.rule?.version ?? 0
+        request.appliedRuleVersion = state.rule?.version ?? 0
+        do {
+            let reply: Quizgate_HeartbeatReply = try await api.post(
+                "heartbeat", token: token, request: request, reply: Quizgate_HeartbeatReply.self
+            )
+            applyServerTime(reply.serverTimeMs)
+            state.deviceBound = reply.deviceBound
+            if reply.ruleChanged {
+                state.rule = mapRule(reply.rule)
+                reconfigureMonitoring()
+            }
+            state.lastSyncAtMs = state.nowMs()
+            reconcileShield()
+            persist()
+            await flushOutbox()
+        } catch let error as ReportUnavailable {
+            if error.needsReenroll {
+                state.deviceToken = nil
+                state.bindCode = nil
+                persist()
+                await enrollIfNeeded()
+            }
+            // 连不上不改盾牌：保持现状比瞎猜安全。
+        } catch {
+            state.recordFault("心跳失败：\(error.localizedDescription)")
+        }
+    }
+
+    // MARK: - 答题闭环
+
+    func loadQuestion() async {
+        guard let token = state.deviceToken, let api else {
+            banner = "还没登记到服务器，先连一次网络"
+            return
+        }
+        busy = true
+        defer { busy = false }
+        var request = Quizgate_NextQuestionRequest()
+        request.grade = Int32(state.childGrade)
+        request.knowledgePoint = state.ledger.lastKnowledgePoint ?? ""
+        request.excludeQuestionID = state.ledger.lastQuestionId ?? ""
+        do {
+            let reply: Quizgate_NextQuestionReply = try await api.post(
+                "next-question", token: token, request: request, reply: Quizgate_NextQuestionReply.self
+            )
+            question = reply.question
+            explanation = nil
+            answeredCorrect = false
+            applyServerTime(reply.serverTimeMs)
+            state.rule = mapRule(reply.rule)
+            persist()
+        } catch let error as ReportUnavailable {
+            banner = error.message
+        } catch {
+            banner = "取题失败：\(error.localizedDescription)"
+        }
+    }
+
+    func submitAnswer(index: Int) async {
+        guard let question, let token = state.deviceToken, let api else { return }
+        busy = true
+        defer { busy = false }
+        var request = Quizgate_AnswerRequest()
+        request.questionID = question.questionID
+        request.selectedIndex = Int32(index)
+        do {
+            let reply: Quizgate_AnswerReply = try await api.post(
+                "answer", token: token, request: request, reply: Quizgate_AnswerReply.self
+            )
+            if reply.correct {
+                state.ledger.correctCount += 1
+                // 答对 = 本轮清零开新一轮，和 Android 一致。不是「告诉你答案」。
+                if let rule = state.rule {
+                    var fresh = GatePolicy.startNewCycle(afterCorrectAt: state.nowMs(), rule: rule)
+                    fresh.correctCount = state.ledger.correctCount
+                    state.ledger = fresh
+                }
+                state.ledger.lastQuestionId = nil
+                state.ledger.lastKnowledgePoint = nil
+                answeredCorrect = true
+                explanation = nil
+                reconcileShield()
+                reconfigureMonitoring()
+            } else {
+                state.ledger.wrongCount += 1
+                state.ledger.lastQuestionId = question.questionID
+                state.ledger.lastKnowledgePoint = question.knowledgePoint
+                explanation = reply.explanation
+            }
+            persist()
+        } catch let error as ReportUnavailable {
+            banner = error.message
+        } catch {
+            banner = "判分失败：\(error.localizedDescription)"
+        }
+    }
+
+    // MARK: - 上报兜底
+
+    private func flushOutbox() async {
+        guard let token = state.deviceToken, let api, let defaults = AppGroup.defaults else { return }
+        let items = OutboxStore.load(from: defaults)
+        guard !items.isEmpty else { return }
+        var sent: Set<String> = []
+        for item in items.prefix(20) {
+            guard let url = URL(string: "\(AppGroup.apiBase ?? "")/api/device/\(item.path)") else { continue }
+            var request = URLRequest(url: url)
+            request.httpMethod = "POST"
+            request.httpBody = item.payload
+            request.setValue(QuizGateAPI.contentType, forHTTPHeaderField: "Content-Type")
+            request.setValue(QuizGateAPI.contentType, forHTTPHeaderField: "Accept")
+            request.setValue(token, forHTTPHeaderField: QuizGateAPI.tokenHeader)
+            do {
+                let (_, response) = try await URLSession.shared.data(for: request)
+                if let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) {
+                    sent.insert(item.id)
+                }
+            } catch {
+                continue
+            }
+        }
+        if !sent.isEmpty { OutboxStore.remove(ids: sent, from: defaults) }
+    }
+
+    // MARK: - 内部
+
+    private func reconcileShield() {
+        let current = decision
+        var mutated = state
+        if ShieldWriter.reconcile(decision: current, state: &mutated) {
+            state = mutated
+            if case .cannotEnforce(let why) = current {
+                banner = "闸门现在拦不住 App：\(label(why))"
+            }
+        }
+    }
+
+    private func label(_ reason: CannotEnforceReason) -> String {
+        switch reason {
+        case .notAuthorized: return "还没拿到屏幕使用时间授权"
+        case .noSelection: return "还没选要管的 App"
+        case .noRule: return "还没从服务器拿到规则"
+        case .stateCorrupt: return "本地状态读不出来"
+        }
+    }
+
+    private func mapRule(_ snapshot: Quizgate_RuleSnapshot) -> RuleState {
+        // watchedPackages / gameMode 刻意不收：那是 Android 包名，iOS 消费不了。
+        RuleState(
+            thresholdMinutes: Int(snapshot.thresholdMinutes),
+            dailyLimitMinutes: Int(snapshot.dailyLimitMinutes),
+            graceMinutes: Int(snapshot.graceMinutes),
+            enabled: snapshot.enabled,
+            version: snapshot.version
+        )
+    }
+
+    private func applyServerTime(_ serverMs: Int64) {
+        guard serverMs > 0 else { return }
+        state.clockOffsetMs = serverMs - Int64(Date().timeIntervalSince1970 * 1000)
+    }
+
+    private func persist() {
+        if !StateStore.save(state) {
+            banner = "本地状态写入失败，闸门可能记不住这一轮"
+        }
+        DarwinSignal.post()
+    }
+}
