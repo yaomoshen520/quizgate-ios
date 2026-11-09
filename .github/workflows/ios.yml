@@ -27,13 +27,31 @@ jobs:
 
       - name: Build (simulator, unsigned)
         run: |
-          xcodebuild \
-            -project QuizGate.xcodeproj \
-            -scheme QuizGate \
-            -configuration Debug \
-            -destination 'generic/platform=iOS Simulator' \
-            CODE_SIGNING_ALLOWED=NO \
-            build
+          # 逐个 target 编，不让第一个错误短路后面的 target：
+          # 一轮 macOS runner 要几分钟，一次只暴露一个 target 的错太贵。
+          # 每个 target 都要试完，最后只要有任一失败就整体失败。
+          FAILED=""
+          for target in QuizGateKit QuizGateKitTests QuizGateMonitor QuizGateShieldConfig QuizGateShieldAction QuizGate; do
+            echo "===== target: $target ====="
+            # 这一步开的是 pipefail，所以管道状态取的就是 xcodebuild；
+            # 放进 if 里是为了不让 -e 在第一个失败 target 处直接把整步掀掉。
+            if xcodebuild \
+              -project QuizGate.xcodeproj \
+              -target "$target" \
+              -configuration Debug \
+              -destination 'generic/platform=iOS Simulator' \
+              CODE_SIGNING_ALLOWED=NO \
+              build 2>&1 | tail -200; then
+              echo "VERDICT $target OK"
+            else
+              echo "VERDICT $target FAILED"
+              FAILED="$FAILED $target"
+            fi
+          done
+          if [ -n "$FAILED" ]; then
+            echo "编译失败的 target：" $FAILED >&2
+            exit 1
+          fi
 
       - name: Pick an available simulator
         id: sim

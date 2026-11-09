@@ -17,11 +17,13 @@ final class ShieldConfigurationExtension: ShieldConfigurationDataSource {
         makeConfiguration()
     }
 
-    override func configuration(shieldingWebDomain webDomain: WebDomain) -> ShieldConfiguration {
+    // 域名这两枚的重载标签仍是 shielding（不是 shieldingWebDomain）—— 系统按参数类型区分，
+    // 写错标签不会少一个盾牌，只会让整个 extension target 编不过。
+    override func configuration(shielding webDomain: WebDomain) -> ShieldConfiguration {
         makeConfiguration()
     }
 
-    override func configuration(shieldingWebDomain webDomain: WebDomain,
+    override func configuration(shielding webDomain: WebDomain,
                                 in category: ActivityCategory) -> ShieldConfiguration {
         makeConfiguration()
     }
