@@ -192,7 +192,7 @@ final class AvatarPoseTests: XCTestCase {
 
     /// 一圈里采 24 个点：够密，不会因为刚好踩在恒等相位上而漏掉一整档动作。
     private func everyPhase(_ periodMs: Int64, _ sample: (Int64) -> Void) {
-        for i in 0..<24 { sample(i * periodMs / 24) }
+        for i in 0..<24 { sample(Int64(i) * periodMs / 24) }
     }
 
     private func moved(_ pose: AvatarPose.Pose) -> Bool {
