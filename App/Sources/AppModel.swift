@@ -47,6 +47,9 @@ final class AppModel: ObservableObject {
     /// VPN 探测当前该跑第几份配置；见 probeVpnArm 里那道量具闸的说明（调试，查完整段删）。
     private var vpnProbeSeq = 0
 
+    /// 本轮 p12 到底取到了没有，一句话。跟着每一行 arm 日志落盘（调试，查完整段删）。
+    private var vpnProbeNote = "身份资源=未探测"
+
     /// 一轮监控区间的寿命上界：本轮 schedule 最长寿到当天 23:59，所以超过 20 小时
     /// 就一定已经过去了，该重配。ensureMonitoringArmed 用它判旧。
     private static let monitoringCycleHorizonMs: Int64 = 20 * 3_600_000
@@ -607,28 +610,36 @@ final class AppModel: ObservableObject {
         Task { await flushLogs() }
     }
 
-    /// VPN 可行性探测（调试，查完整段删）。侧载包里注入的 Personal VPN entitlement
-    /// 系统认不认，唯一判据就是 saveToPreferences 成不成。
+    /// VPN 可行性探测 v3（调试，查完整段删）。
     ///
-    /// 上一枚包（7d0cbb9）交的是「什么都没设」的 IKEv2，系统回 NEVPNErrorDomain code=1
-    /// 「Unsupported authenticationMethod」——那是配置校验层的说法，回答不了权限层：
-    /// 校验到底排在 entitlement 检查之前还是之后，我没有任何官方原文可凭，只能自己劈变量。
-    /// 一次点击连打三份配置，每份只动一个字段：
-    /// A/B 任一存成功 ⟹ 权限层认这枚注入的 entitlement，直接开 App 代理原型；
-    /// 三份全败但报错字段在变（authenticationMethod → identity → …）⟹ 还卡在配置层，
-    /// 必须再编一枚「删掉 entitlement」的对照包才能把两种失败分开；
-    /// C 是上一轮形状的原样复现，兼作「这枚包真在跑新代码」的对照。
+    /// 上一轮（6f6a406）三份配置全败，但报错逐字段在挪：A/C 说「认证方式不支持」，
+    /// B 显式设成 .certificate 后改口说「Missing identity」。所以那次 code=1
+    /// 确实是配置校验层的说法，权限层从头到尾没答过话 —— 命中我预先登记的分支。
+    ///
+    /// 这一轮把「身份」那一格也填上：CI 用 tools/gen-probe-p12.sh 现生成一枚
+    /// 一次性自签名 p12 打进资源包（私钥不入库，公开仓库里只可能是脚本不是钥匙）。
+    /// D 是决定性那枚、排在最前；B/C 沿用上一轮的标签原样做对照 —— 它们必须复现
+    /// 旧报错，否则说明这枚包跑的根本不是新代码，D 的读数也就不能信。
+    ///
+    /// 判据：
+    /// D 存成功 ⟹ 侧载注入的 Personal VPN entitlement 被认，直接开按 App 掐流量的原型；
+    /// D 又换了一格新报错 ⟹ 还卡在配置层，继续劈；
+    /// D 报出权限口径的话（不再是「某字段不支持」这种配置话术）⟹ 权限层说了「不」，
+    ///   回到「要不要上付费开发者账号」那个决定。
+    /// （上一轮的 A「只关扩展认证」已删：它和 C 逐字同码，是枚空对照。）
     func debugProbeVpn() {
-        // A：只关掉扩展认证。文档写明 authenticationMethod=.none 时只要
-        // useExtendedAuthentication 为真就仍会协商扩展认证，而它的默认值我没拿到原文，
-        // 所以先单独把这个开关拨到关，看报错是不是就消失了。
-        let a = NEVPNProtocolIKEv2()
-        a.serverAddress = "quizgate-probe.invalid"
-        a.useExtendedAuthentication = false
+        // D：证书认证 + 真实身份数据。和 B 只差 identityData 一个字段。
+        let (identityData, identityNote) = probeIdentityBundle()
+        let d = NEVPNProtocolIKEv2()
+        d.serverAddress = "quizgate-probe.invalid"
+        d.useExtendedAuthentication = false
+        d.authenticationMethod = NEVPNIKEAuthenticationMethod.certificate
+        d.localIdentifier = "quizgate-probe"
+        d.remoteIdentifier = "quizgate-probe"
+        d.identityData = identityData
+        d.identityDataPassword = "quizgate"
 
-        // B：把认证方式显式设成 IKEv2 认的值，并补上两个标识符。
-        // 没有身份数据是故意的 —— 若报错从「认证方式」挪到「身份/证书」那一格，
-        // 就说明校验器是逐字段走的，上一轮的报错纯属配置。
+        // B：上一轮的证书认证形状，不带身份 —— 预期仍报 Missing identity。
         let b = NEVPNProtocolIKEv2()
         b.serverAddress = "quizgate-probe.invalid"
         b.useExtendedAuthentication = false
@@ -636,13 +647,28 @@ final class AppModel: ObservableObject {
         b.localIdentifier = "quizgate-probe"
         b.remoteIdentifier = "quizgate-probe"
 
-        // C：上一枚包的原样，做对照。
+        // C：最早那枚包的原样 —— 预期仍报 Unsupported authenticationMethod。
         let c = NEVPNProtocolIKEv2()
         c.serverAddress = "quizgate-probe.invalid"
 
         // 再点一次就从头再跑，方便连点两轮对拍。
         vpnProbeSeq = 0
-        probeVpnArm(["A-扩展认证关", "B-显式证书认证", "C-上一轮原样"], [a, b, c], 0)
+        vpnProbeNote = identityNote
+        probeVpnArm(["D-证书认证带身份", "B-显式证书认证", "C-上一轮原样"], [d, b, c], 0)
+    }
+
+    /// 从资源包里取那枚一次性 p12，并把「取到了没有、多大」压成一句话。
+    ///
+    /// 这句话必须跟着每行 arm 日志一起落：缺了它，「CI 没生成 p12」「p12 没进包」
+    /// 和「身份被系统拒」在日志里是同一种长相，而这三件事的结论完全不同。
+    private func probeIdentityBundle() -> (Data?, String) {
+        guard let url = Bundle.main.url(forResource: "QuizGateProbe", withExtension: "p12") else {
+            return (nil, "身份资源=包内没有 QuizGateProbe.p12")
+        }
+        guard let data = try? Data(contentsOf: url) else {
+            return (nil, "身份资源=读不到 " + url.lastPathComponent)
+        }
+        return (data, "身份资源=p12 " + String(data.count) + " 字节")
     }
 
     /// 逐份存、逐份记，跑完就停。三份共用 `NEVPNManager` 这一个槽位，所以必须串行：
@@ -662,6 +688,9 @@ final class AppModel: ObservableObject {
             return
         }
         vpnProbeSeq = i + 1
+        // 在主 actor 这一侧先把话抄下来：回调跑在哪个线程不由我们定，
+        // 隔着一层闭包去读 @MainActor 属性是并发警告，读到旧值更是假读数。
+        let note = vpnProbeNote
         let manager = NEVPNManager.shared()
         manager.`protocol` = protos[i]
         manager.isEnabled = false
@@ -672,7 +701,12 @@ final class AppModel: ObservableObject {
                 : "存 VPN 配置失败 domain=" + e!.domain
                     + " code=" + String(e!.code)
                     + " desc=" + e!.localizedDescription
-            DiagLog.record("vpn", "arm=" + labels[i] + " " + line,
+                    // 同一句「失败」在配置层和权限层是两个结论，而 domain/code 分不开它们
+                    // （上一轮就是被这一点卡住）。Apple 把口径写在 reason/suggest 里，
+                    // 所以这三格全捞，捞空了就落一个 - 表示「系统确实没给」。
+                    + " reason=" + (e!.localizedFailureReason ?? "-")
+                    + " suggest=" + (e!.localizedRecoverySuggestion ?? "-")
+            DiagLog.record("vpn", "arm=" + labels[i] + " " + note + " " + line,
                            level: e == nil ? .info : .error)
             Task { @MainActor in
                 await self.flushLogs()

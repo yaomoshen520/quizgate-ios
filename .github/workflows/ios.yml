@@ -22,6 +22,12 @@ jobs:
       - name: Generate Swift protobuf
         run: bash tools/gen-proto.sh
 
+      # VPN 探测要一枚能过「必须有身份数据」那一格的一次性 p12。现生成、不入库：
+      # 这是公开仓库，私钥提交上去就永久泄露。必须在 xcodegen 之前跑，
+      # 工程文件生成时看不到这个文件，它就进不了 Copy Bundle Resources。
+      - name: Generate throwaway probe identity
+        run: bash tools/gen-probe-p12.sh
+
       - name: Generate Xcode project
         run: xcodegen generate --spec project.yml
 
@@ -203,6 +209,12 @@ jobs:
       - name: Generate Swift protobuf
         run: bash tools/gen-proto.sh
 
+      # VPN 探测要一枚能过「必须有身份数据」那一格的一次性 p12。现生成、不入库：
+      # 这是公开仓库，私钥提交上去就永久泄露。必须在 xcodegen 之前跑，
+      # 工程文件生成时看不到这个文件，它就进不了 Copy Bundle Resources。
+      - name: Generate throwaway probe identity
+        run: bash tools/gen-probe-p12.sh
+
       - name: Generate Xcode project
         run: xcodegen generate --spec project.yml
 
@@ -239,6 +251,12 @@ jobs:
           PROD=dd/Build/Products/Release-iphoneos
           APP="$PROD/QuizGate.app"
           [ -d "$APP" ] || { echo "找不到 $APP，前面那步没真产出 device 包" >&2; exit 1; }
+
+          # 探测包必须有那枚一次性 p12：Swift 那边会老实记「包内没有 QuizGateProbe.p12」，
+          # 但那意味着整轮手机往返白跑。签封条之前先在这里断掉。
+          [ -s "$APP/QuizGateProbe.p12" ] \
+            || { echo "p12 没进 app bundle（xcodegen 早于生成步跑了？），这枚包测不出身份那一格" >&2
+                 ls -l "$APP" | head -30 >&2; exit 1; }
 
           # application-identifier 这一条从来就不写在 .entitlements 里：它是 Xcode 从描述文件
           # 读出来、签进二进制的那一项（对比 kingstinct 那四个 target 的 entitlements，也只有
@@ -314,6 +332,13 @@ jobs:
             grep -qa "$TEAMID.$bid" "$t/$exe" \
               || { echo "$(basename "$t") 的二进制里没有 $TEAMID.$bid 这个串：entitlements 没进签名封条" >&2; exit 1; }
           done
+
+          # Personal VPN 是受限权限：ad-hoc 签能不能把它带进封条，正是本轮要问系统的那件事。
+          # 所以「权限层拒了」和「签名步把它丢了」必须在读日志之前就分家 —— 少了这道断言，
+          # 后面那条 Missing identity → 别的字段 的读数就说不清是谁挡的路。
+          # 扫二进制而不是 codesign 的输出：签名封条就在二进制里，独立字面量搜得到。
+          grep -qa "com.apple.developer.networking.vpn.api" "$APP/QuizGate" \
+            || { echo "宿主二进制里没有 vpn.api 这条 entitlement：本轮读数是签名层的假阴性" >&2; exit 1; }
 
           # 架构也得当场点验：巨魔装一个只有 x86_64 切片的包，报错会写成让人误以为是签名问题的样子。
           echo "--- 宿主可执行文件架构 ---"
