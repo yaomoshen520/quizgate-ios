@@ -37,12 +37,15 @@ public enum ShieldWriter {
         // 写后回读：store 的属性由系统 daemon  backing。设进去再读出来若对不上，
         // 就是 daemon 没认这次写（侧载/provisioning 那一层），不是我们没写。
         // 这是「写了但系统不执行」在本机唯一拿得到的读数。
+        // 用纯 String 拼接而不是「插值字面量 + 插值字面量」：后者经 -O 折叠后，
+        // 回读那一段的字面量在 Mach-O 里扫不到（实测 回读/cats=/web= 全 0 命中），
+        // 无法离线证明回读真编进了包。前导标签刻意 >15 字节，落 __cstring 可被扫到。
         let readApps = store.shield.applications?.count ?? -1
         let readCats = store.shield.applicationCategories == nil ? "nil" : "set"
-        DiagLog.record("shield",
-                       "落盾写入 apps=\(appCount) cats=\(catCount) web=\(webCount)"
-                           + " 回读 apps=\(readApps) cats=\(readCats)",
-                       level: .warn)
+        let wrote = "落盾写入选择 apps=" + String(appCount) + " cats=" + String(catCount) + " web=" + String(webCount)
+        let readback = "写后回读系统盾 apps=" + String(readApps) + " cats=" + readCats
+        DiagLog.record("shield", wrote, level: .warn)
+        DiagLog.record("shield", readback, level: .warn)
         return .applied
     }
 
