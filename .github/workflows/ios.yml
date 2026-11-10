@@ -258,7 +258,7 @@ jobs:
               -c "Add :com.apple.developer.team-identifier string $TEAMID" "$3"
           }
 
-          # 三个 extension 必须在 App 的 PlugIns 里，缺任何一个装上去都是个哑闸门：
+          # 四枚 extension 必须在 App 的 PlugIns 里，缺任何一个装上去都是个哑闸门：
           # 没有 monitor extension 就没有计时，没有 shield 就没有拦截，
           # 没有 tunnel 就没有本轮要问系统的那一枚 provider 扩展。
           # 而 project.yml 里四枚 extension 目标全是 SKIP_INSTALL: YES，
