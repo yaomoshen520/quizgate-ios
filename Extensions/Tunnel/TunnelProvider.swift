@@ -28,7 +28,11 @@ private enum CutoffError: Error {
 
 final class TunnelProvider: NEPacketTunnelProvider {
 
-    override func startTunnel(options: [String: Any]?, completionHandler: @escaping (Error?) -> Void) {
+    /// 签名照 Apple 文档逐字抄：`options` 那一份字典是 `[String: NSObject]?`，不是 `[String: Any]?`
+    /// ——写成一字之差的 Any，编译器给的是一句「method does not override any method from its
+    /// superclass」（上一轮 CI 就红在这一行），而这句话长得像我们类名写错了，指不到真正的原因。
+    override func startTunnel(options: [String: NSObject]?,
+                              completionHandler: @escaping (Error?) -> Void) {
         let stamp = nowMs()
         let base = AppGroup.apiBase
         let note = VpnPlan.allowedNote(fromBase: base)
