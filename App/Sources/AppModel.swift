@@ -566,6 +566,27 @@ final class AppModel: ObservableObject {
         }
     }
 
+    // MARK: - 落盾诊断（侧载执行层取证，调试用，查完整段删）
+
+    /// 强制从主 App 前台写一次盾并回读，绕过 reconcile 的幂等闸：
+    /// state.shieldApplied 已为 true 时 reconcile 一个字节都不写，取不到写后回读的现场。
+    func debugForceShield() {
+        let applied = ShieldWriter.apply(selectionData: state.selectionData) == .applied
+        state.shieldApplied = applied
+        persist()
+        DiagLog.record("shield", "主App强制落盾 applied=\(applied)", level: .warn)
+        Task { await flushLogs() }
+    }
+
+    /// 清盾对照。和强制落盾成对：能落就能清，调试不会把设备永久锁死。
+    func debugClearShield() {
+        ShieldWriter.clear()
+        state.shieldApplied = false
+        persist()
+        DiagLog.record("shield", "主App清盾", level: .warn)
+        Task { await flushLogs() }
+    }
+
     private func label(_ reason: CannotEnforceReason) -> String {
         switch reason {
         case .notAuthorized: return "还没拿到屏幕使用时间授权"

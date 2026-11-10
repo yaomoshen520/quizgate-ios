@@ -23,13 +23,26 @@ public enum ShieldWriter {
     public static func apply(selectionData: Data?) -> ApplyResult {
         guard let selection = SelectionArchive.decode(selectionData),
               !SelectionArchive.isEmpty(selection) else {
+            DiagLog.record("shield", "落盾跳过：选择解不出或为空", level: .warn)
             return .noTokens
         }
+        let appCount = selection.applicationTokens.count
+        let catCount = selection.categoryTokens.count
+        let webCount = selection.webDomainTokens.count
         store.shield.applications = selection.applicationTokens
         store.shield.applicationCategories = selection.categoryTokens.isEmpty
             ? nil
             : .specific(selection.categoryTokens)
         store.shield.webDomains = selection.webDomainTokens
+        // 写后回读：store 的属性由系统 daemon  backing。设进去再读出来若对不上，
+        // 就是 daemon 没认这次写（侧载/provisioning 那一层），不是我们没写。
+        // 这是「写了但系统不执行」在本机唯一拿得到的读数。
+        let readApps = store.shield.applications?.count ?? -1
+        let readCats = store.shield.applicationCategories == nil ? "nil" : "set"
+        DiagLog.record("shield",
+                       "落盾写入 apps=\(appCount) cats=\(catCount) web=\(webCount)"
+                           + " 回读 apps=\(readApps) cats=\(readCats)",
+                       level: .warn)
         return .applied
     }
 

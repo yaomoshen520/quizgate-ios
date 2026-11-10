@@ -18,6 +18,7 @@ struct HomeView: View {
                     if model.state.shieldApplied { answerCard }
                     countdownCard
                     permissionCard
+                    shieldDebugCard
                     if let note = model.monitoringNote {
                         BannerView(text: note, tone: .warn)
                     }
@@ -138,6 +139,33 @@ struct HomeView: View {
                           ok: model.state.lastSyncAtMs != nil)
             PermissionRow(name: "已绑定到家长账号",
                           ok: model.state.deviceBound)
+        }
+        .card()
+    }
+
+    /// 落盾诊断卡（调试，查完整段删）。侧载装上后强制写盾+回读，
+    /// 再冷启动红果看系统到底执不执行。
+    private var shieldDebugCard: some View {
+        VStack(alignment: .leading, spacing: Theme.Space.s3) {
+            Text("落盾诊断（调试）")
+                .font(.system(size: Theme.Text.control, weight: .semibold))
+                .foregroundStyle(Theme.Palette.ink)
+            Text("点“强制落盾”，再把红果彻底关掉重开，看是否被蓝色盾牌挡住。")
+                .font(.system(size: Theme.Text.caption))
+                .foregroundStyle(Theme.Palette.inkSoft)
+            HStack(spacing: Theme.Space.s3) {
+                Button { model.debugForceShield() } label: {
+                    Text("强制落盾")
+                        .frame(maxWidth: .infinity, minHeight: Theme.Metric.controlHeight)
+                }
+                .buttonStyle(PrimaryButtonStyle())
+                Button { model.debugClearShield() } label: {
+                    Text("清盾")
+                        .frame(minHeight: Theme.Metric.controlHeight)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.large)
+            }
         }
         .card()
     }
