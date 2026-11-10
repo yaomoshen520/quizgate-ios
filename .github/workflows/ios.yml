@@ -327,13 +327,19 @@ jobs:
           # 宿主的 networkextension 是上一轮 code=5「permission denied」的直接嫌疑，所以这一格
           # 必须当场证明它真进了签名的封条，而不是只写在我自己的注释里。
           # 只带扩展那一份不够：系统认的是发起 saveToPreferences 的这一侧。
-          # 两道分开查：先查喂给 codesign 的合并 plist（值对不对），再查二进制（有没有被签进去）。
-          he=$(plutil -extract com.apple.developer.networking.networkextension.0 raw -o - sigents-tmp/App.plist 2>/dev/null) \
-            || { echo "宿主的合并 plist 里没有 networkextension 这一项：改完 entitlements 忘了同步签名步" >&2; exit 1; }
-          [ "$he" = "packet-tunnel-provider" ] \
-            || { echo "宿主的 networkextension 取值是 $he，不是 packet-tunnel-provider" >&2; exit 1; }
+          #
+          # 只复用这个文件里已经跑绿过的两种形状：grep codesign 的原样输出、grep 二进制。
+          # 上一轮我就在这里栽过一次 —— 用 plutil -extract 取带点号的键名，而 plutil 的点号
+          # 是路径分隔符，它去找 com→apple→…→0 这串嵌套键，必然失败，于是我的断言自己假红，
+          # 把「签名已经签进去了」这一步咬死在 exit 1 上。假失败最坏的对方就是本轮：
+          # 它长得和「权限被系统拒」一模一样。
+          hents=$(codesign -d --entitlements :- "$APP" 2>&1)
+          echo "$hents" | grep -q "com.apple.developer.networking.networkextension" \
+            || { echo "宿主签名里没有 networkextension 这条 entitlement：本轮读数是签名层的假阴性" >&2; exit 1; }
+          echo "$hents" | grep -q "packet-tunnel-provider" \
+            || { echo "宿主的 networkextension 里没有 packet-tunnel-provider 这一档取值" >&2; exit 1; }
           grep -qa "com.apple.developer.networking.networkextension" "$APP/QuizGate" \
-            || { echo "宿主二进制里没有 networkextension 这条 entitlement：本轮 code=5 的读数仍是签名层的假阴性" >&2; exit 1; }
+            || { echo "宿主二进制里搜不到 networkextension 这个串：封条没带上" >&2; exit 1; }
 
           # tunnel 扩展单独一套断言，绝不套上面那个循环：它没有 family-controls，
           # 拿那一格去要求它，每次都是假失败（而假失败会被读成"权限被系统拒"，正好是本轮最怕的误读）。
