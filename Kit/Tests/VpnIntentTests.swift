@@ -11,12 +11,16 @@ final class VpnIntentTests: XCTestCase {
     /// 设备墙钟比服务器基准慢 60 秒 —— 故意不是整数倍，这样「忘了换算」一定会被读出来。
     private var local: Int64 { server - 60_000 }
 
-    private var dir: URL {
+    /// 一个测试实例一个临时目录。刻意存下来而不是每次现算：
+    /// 上一版这里写成计算属性，于是「setUp 交给 store 的那一格」和「用例自己手写坏文件的那一格」
+    /// 是两个不同 UUID 的目录 —— 写失败的 `try?` 把错吞了，`read()` 读到 nil 反而让断言变绿。
+    /// 那两条红就是这道坑自己报的账。
+    private let dir: URL = {
         let url = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("quizgate-intent-tests-\(UUID().uuidString)", isDirectory: true)
         try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         return url
-    }
+    }()
 
     override func setUp() {
         super.setUp()
@@ -227,6 +231,20 @@ final class VpnIntentTests: XCTestCase {
 
     // MARK: - 落盘
 
+    /// store 自己认为的那一格文件路径。手写坏文件时必须拿这一格，
+    /// 在测试里重拼一遍 "intent.json" 就是再赌一次「两边拼得一样」——
+    /// 上一版的假绿正是赌输了却没人数（写到另一个 UUID 目录里，`read()` 本来就返回 nil）。
+    private var intentFile: URL? { VpnIntentStore.fileURL }
+
+    /// 手写这一格不许静默失败：写不进去就是测试自己坏了，必须红，不能悄悄变成一条通过的断言。
+    private func writeRaw(_ text: String, to file: URL) {
+        do {
+            try Data(text.utf8).write(to: file)
+        } catch {
+            XCTFail("坏文件没落下去：" + error.localizedDescription)
+        }
+    }
+
     func testRoundTripKeepsEveryField() {
         let original = intent(cutoffAt: server, unlock: server + 60_000, end: server + 600_000)
         XCTAssertNil(VpnIntentStore.write(original))
@@ -235,9 +253,16 @@ final class VpnIntentTests: XCTestCase {
     }
 
     func testUnreadableFileIsTreatedAsNoIntent() {
-        let file = dir.appendingPathComponent("intent.json")
-        try? Data("这不是 JSON".utf8).write(to: file)
+        guard let file = intentFile else {
+            XCTFail("测试落点没生效，fileURL 为空")
+            return
+        }
+        writeRaw("这不是 JSON", to: file)
         XCTAssertNil(VpnIntentStore.read())
+        // 正对照：同一格随后能被 store 正常写读。没有这一条，上面那句 nil
+        // 就分不清是「坏文件被拒」还是「这一格压根写不进去」。
+        XCTAssertNil(VpnIntentStore.write(intent(cutoffAt: server)))
+        XCTAssertNotNil(VpnIntentStore.read())
     }
 
     func testFutureSchemaVersionIsRefusedInsteadOfHalfRead() {
@@ -246,19 +271,24 @@ final class VpnIntentTests: XCTestCase {
         let body = "{\"schema\":SCHEMA,\"armed\":true,\"cutoffAtLocalMs\":1,"
             + "\"unlockUntilLocalMs\":null,\"notAfterLocalMs\":99999999999999,"
             + "\"reason\":\"test\",\"seq\":3,\"writtenAtLocalMs\":1}"
-        let file = dir.appendingPathComponent("intent.json")
-        try? Data(body.replacingOccurrences(of: "SCHEMA", with: "99").utf8).write(to: file)
+        guard let file = intentFile else {
+            XCTFail("测试落点没生效，fileURL 为空")
+            return
+        }
+        writeRaw(body.replacingOccurrences(of: "SCHEMA", with: "99"), to: file)
         XCTAssertNil(VpnIntentStore.read())
 
-        try? Data(body.replacingOccurrences(of: "SCHEMA", with: "1").utf8).write(to: file)
+        writeRaw(body.replacingOccurrences(of: "SCHEMA", with: "1"), to: file)
         XCTAssertEqual(VpnIntentStore.read()?.seq, 3)
     }
 
+    /// seq 是「下一次写入该用第几号」，所以它必须来自盘上那一号 + 1，
+    /// 而不是调用方自己数 —— 主 App 被系统杀掉重来时手上什么都没有，只有盘上那份。
     func testSeqAdvancesFromWhatIsOnDisk() {
         XCTAssertEqual(VpnIntentStore.nextSeq(), 0)
-        XCTAssertNil(VpnIntentStore.write(intent(cutoffAt: server)))
+        XCTAssertNil(VpnIntentStore.write(intent(cutoffAt: server, seq: VpnIntentStore.nextSeq())))
         XCTAssertEqual(VpnIntentStore.nextSeq(), 1)
-        XCTAssertNil(VpnIntentStore.write(intent(cutoffAt: server)))
+        XCTAssertNil(VpnIntentStore.write(intent(cutoffAt: server, seq: VpnIntentStore.nextSeq())))
         XCTAssertEqual(VpnIntentStore.nextSeq(), 2)
     }
 
