@@ -8,6 +8,16 @@
 	<array>
 		<string>allow-vpn</string>
 	</array>
+	<!-- 宿主也要带这一枚，不是只有扩展带：系统校验「这份 tunnel 配置能不能落盘」时，
+	     看的是发起写入的这一侧有没有 networkextension。上一轮真机读数就是它缺位：
+	     存我们那枚 NETunnelProviderManager 时当场被拒 NEVPNErrorDomain code=5
+	     「permission denied」，而扩展自己的 plist 里这条一直在。
+	     （社区两处独立答案同口径：containing app 与 extension 都要带；见 SO 35115012 采纳答案。）
+	     取值与扩展侧逐字一致，都只声明 packet-tunnel-provider 这一档。 -->
+	<key>com.apple.developer.networking.networkextension</key>
+	<array>
+		<string>packet-tunnel-provider</string>
+	</array>
 	<key>com.apple.security.application-groups</key>
 	<array>
 		<string>group.com.quizgate.ios</string>
