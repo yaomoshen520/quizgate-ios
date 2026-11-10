@@ -612,10 +612,10 @@ final class AppModel: ObservableObject {
     func debugProbeVpn() {
         let manager = NEVPNManager.shared()
         let proto = NEVPNProtocolIKEv2()
-        proto.serverIdentifier = "quizgate-probe"
-        proto.serverURL = URL(string: "http://101.35.194.117")
-        proto.localIdentifier = "quizgate"
-        manager.protocol = proto
+        // 只碰已确认存在的成员：基类 NEVPNProtocol 上是 serverAddress（不是 serverURL），
+        // 也没有 serverIdentifier；manager 的协议属性叫 protocol，是 Swift 关键字要反引号。
+        proto.serverAddress = "quizgate-probe.invalid"
+        manager.`protocol` = proto
         manager.isEnabled = false
         manager.saveToPreferences { err in
             if let e = err as NSError? {
