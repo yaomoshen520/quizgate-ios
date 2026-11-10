@@ -696,16 +696,20 @@ final class AppModel: ObservableObject {
         manager.isEnabled = false
         manager.saveToPreferences { err in
             let e = err as NSError?
-            let line = e == nil
-                ? "存 VPN 配置成功：系统认这枚 Personal VPN entitlement"
-                : "存 VPN 配置失败 domain=" + e!.domain
-                    + " code=" + String(e!.code)
-                    + " desc=" + e!.localizedDescription
-                    // 同一句「失败」在配置层和权限层是两个结论，而 domain/code 分不开它们
-                    // （上一轮就是被这一点卡住）。Apple 把口径写在 reason/suggest 里，
-                    // 所以这三格全捞，捞空了就落一个 - 表示「系统确实没给」。
-                    + " reason=" + (e!.localizedFailureReason ?? "-")
-                    + " suggest=" + (e!.localizedRecoverySuggestion ?? "-")
+            // 一行日志拆成几句短赋值：把三元和五段拼接写成同一个表达式，
+            // Swift 编译器会直接甩一句「unable to type-check this expression in
+            // reasonable time」然后把整个 target 编挂（上一枚包就是这么红的）。
+            var line = "存 VPN 配置成功：系统认这枚 Personal VPN entitlement"
+            if let e = e {
+                // 同一句「失败」在配置层和权限层是两个结论，而 domain/code 分不开它们
+                // （上一轮就是被这一点卡住）。Apple 把口径写在 reason/suggest 里，
+                // 所以这三格全捞，捞空了就落一个 - 表示「系统确实没给」。
+                line = "存 VPN 配置失败 domain=" + e.domain
+                line += " code=" + String(e.code)
+                line += " desc=" + e.localizedDescription
+                line += " reason=" + (e.localizedFailureReason ?? "-")
+                line += " suggest=" + (e.localizedRecoverySuggestion ?? "-")
+            }
             DiagLog.record("vpn", "arm=" + labels[i] + " " + note + " " + line,
                            level: e == nil ? .info : .error)
             Task { @MainActor in
