@@ -44,6 +44,9 @@ final class AppModel: ObservableObject {
     /// 否则每 30 秒一次心跳就往通知中心塞一条。
     private var lastPromptedShield: Bool?
 
+    /// VPN 探测当前该跑第几份配置；见 probeVpnArm 里那道量具闸的说明（调试，查完整段删）。
+    private var vpnProbeSeq = 0
+
     /// 一轮监控区间的寿命上界：本轮 schedule 最长寿到当天 23:59，所以超过 20 小时
     /// 就一定已经过去了，该重配。ensureMonitoringArmed 用它判旧。
     private static let monitoringCycleHorizonMs: Int64 = 20 * 3_600_000
@@ -637,13 +640,28 @@ final class AppModel: ObservableObject {
         let c = NEVPNProtocolIKEv2()
         c.serverAddress = "quizgate-probe.invalid"
 
+        // 再点一次就从头再跑，方便连点两轮对拍。
+        vpnProbeSeq = 0
         probeVpnArm(["A-扩展认证关", "B-显式证书认证", "C-上一轮原样"], [a, b, c], 0)
     }
 
-    /// 逐份存、逐份记，跑完就停。三份共用 NEVPNManager 这一个槽位，所以必须串行：
+    /// 逐份存、逐份记，跑完就停。三份共用 `NEVPNManager` 这一个槽位，所以必须串行：
     /// 并发提交的话后一份会盖掉前一份，日志就分不清是哪份配置的结果。
+    ///
+    /// 那道 seq 闸不是保险丝而是量具：上一轮一次点击落了 36 行同文案日志，
+    /// 「手指连点」和「系统把同一个 completionHandler 投递了多次」两种解释我分不开。
+    /// 后者对串行递归是致命的（每份配置的重复回调都会再往下开一份，指数放大），
+    /// 所以这里只让「当前该跑的那一下」往下走，多余的回调原样记一行丢在日志里 ——
+    /// 真投回来的次数就写在 tag=vpn 里，不用再猜。
     private func probeVpnArm(_ labels: [String], _ protos: [NEVPNProtocol], _ i: Int) {
         if i >= protos.count { return }
+        guard i == vpnProbeSeq else {
+            DiagLog.record("vpn", "arm=" + labels[i] + " 第" + String(i)
+                               + "份重复回调，已丢弃（期望 seq=" + String(vpnProbeSeq) + "）",
+                           level: .warn)
+            return
+        }
+        vpnProbeSeq = i + 1
         let manager = NEVPNManager.shared()
         manager.`protocol` = protos[i]
         manager.isEnabled = false
