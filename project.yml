@@ -73,6 +73,13 @@ targets:
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
+        # iPad 上四个方向都放：孩子把 iPad 架在桌上多半是横屏，只给竖屏等于
+        # 让答题页在最常见的摆放方式下转不了。iPhone 仍锁竖屏（单手握着答题）。
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
         # 本轮区间最长寿到当天 23:59，而重配只在前台跑过 —— 这一串就是「孩子一整天
         # 不打开 App」那条路径上的补救。标识符必须与 BackgroundRefresh.identifier 逐字相同，
         # 不一致时 submit 只在真机后台抛错，本机和模拟器上都看不出问题。
@@ -94,7 +101,9 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.quizgate.ios
         CODE_SIGN_ENTITLEMENTS: App/QuizGate.entitlements
-        TARGETED_DEVICE_FAMILY: "1"
+        # "1,2" = iPhone + iPad。原来只给 iPhone，同一枚包在 iPad 上装得上但系统是
+        # 以兼容模式跑的，SwiftUI 拿到的 size class 永远是 compact，宽屏排版一行都不会生效。
+        TARGETED_DEVICE_FAMILY: "1,2"
         # 图标名写死在这里，不靠工具默认值：actool 找不到叫这个名字的图标集是硬失败，
         # 而「xcodegen 会不会替我注入 ASSETCATALOG_COMPILER_APPICON_NAME」属于工具行为，
         # 会随版本变。名字由我们说了算，Assets 里就得有对应那套。
@@ -104,6 +113,7 @@ targets:
       - target: QuizGateMonitor
       - target: QuizGateShieldConfig
       - target: QuizGateShieldAction
+      - target: QuizGateTunnel
       # 静态库不会把自己的依赖带给链接它的 bundle：QuizGateKit 里那些 import SwiftProtobuf
       # 的代码编得过（.a 不解析外部符号），一旦链进 bundle 就在 ld 阶段炸。
       # 所以每个真正产出 bundle 的目标都得自己声明这枚包 —— 三个 extension 同理。
@@ -198,6 +208,42 @@ targets:
       - target: QuizGateKit
       - package: SwiftProtobuf
 
+  # 第四枚扩展：packet tunnel provider。
+  #
+  # 它的扩展点是 com.apple.networkextension.packet-tunnel（Apple NEPacketTunnelProvider
+  # 文档页里的 NSExtension 示例逐字给的就是这一串，注意**不是** packet-tunnel-provider——
+  # 后缀那个名字属于下面 entitlement 的取值，两者混了系统就不会加载这枚扩展，
+  # 而失败的表现是「VPN 起不来」，看起来像权限被拒，其实是我们自己的 plist 写错）。
+  QuizGateTunnel:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: Extensions/Tunnel
+    info:
+      path: Extensions/Tunnel/Info.plist
+      properties:
+        CFBundleDisplayName: QuizGate VPN
+        CFBundleShortVersionString: "0.1.0"
+        CFBundleVersion: "1"
+        QUIZGATE_APP_GROUP: $(QUIZGATE_APP_GROUP)
+        # 隧道扩展要自己算「掐网之后给答题接口留哪条活路」，用的就是这串地址。
+        # 每份 Info.plist 各管各的 bundle，主 App 那一项不会传过来，缺了就永远填不出放行地址，
+        # 于是扩展侧那道 fail-open 闸会一直拒绝起隧道（这是刻意的：宁可不掐，不能把孩子锁死）。
+        QUIZGATE_API_BASE: $(QUIZGATE_API_BASE)
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.networkextension.packet-tunnel
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).TunnelProvider
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.quizgate.ios.tunnel
+        PRODUCT_NAME: QuizGateTunnel
+        CODE_SIGN_ENTITLEMENTS: Extensions/Tunnel/Tunnel.entitlements
+        APPLICATION_EXTENSION_API_ONLY: YES
+        SKIP_INSTALL: YES
+    dependencies:
+      - target: QuizGateKit
+      - package: SwiftProtobuf
+
 schemes:
   # 每个 target 单独一枚 scheme，CI 就能逐 target 编一遍：
   # xcodebuild -target 不会替我们把 SPM 依赖接进 header/search path（SwiftProtobuf 会满屏找不到），
@@ -223,6 +269,10 @@ schemes:
     build:
       targets:
         QuizGateShieldAction: all
+  QuizGateTunnel:
+    build:
+      targets:
+        QuizGateTunnel: all
   QuizGate:
     build:
       targets:

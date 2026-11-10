@@ -9,6 +9,9 @@ import QuizGateKit
 /// 不能转成 bundle id 传后端再传回来。家长在自己手机上选了也传不过来。
 struct SetupView: View {
     @EnvironmentObject var model: AppModel
+    @Environment(\.horizontalSizeClass) private var horizontalSize
+
+    private var wide: Bool { horizontalSize == .regular }
 
     var body: some View {
         ZStack {
@@ -16,15 +19,21 @@ struct SetupView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: Theme.Space.s6) {
                     header
-                    authorizationCard
-                    selectionCard
-                    promptCard
-                    bindCard
+                    // 四步是有序的，宽屏上两列也仍然从左到右、从上到下读得通；
+                    // 单列在 iPad 上会把每一步都拉成一条横幅，家长反而看不清哪一步还没做。
+                    LazyVGrid(columns: cardGridColumns(wide: wide), alignment: .leading,
+                              spacing: Theme.Space.s6) {
+                        authorizationCard
+                        selectionCard
+                        promptCard
+                        bindCard
+                    }
                     if let banner = model.banner {
                         BannerView(text: banner, tone: .warn)
                     }
                 }
                 .padding(Theme.Space.s5)
+                .readableColumn()
             }
         }
         .familyActivityPicker(isPresented: $model.showSelectionPicker, selection: $model.selection)
@@ -36,7 +45,8 @@ struct SetupView: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: Theme.Space.s2) {
-            Text("把这台 iPhone 交给家长")
+            // 这句原来写死「这台 iPhone」。同一枚包现在也装 iPad，指引不能跟着设备变口径。
+            Text("把这台设备交给家长")
                 .font(.system(size: Theme.Text.title, weight: .bold))
                 .foregroundStyle(Theme.Palette.ink)
             Text("下面几步必须在这台机器上做一次。做完之后，时长规则可以在家长后台远程改。")

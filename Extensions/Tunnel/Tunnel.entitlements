@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- 这一枚是 provider 侧要的权限，和主 App 那枚 Personal VPN（allow-vpn）不是一回事：
+	     allow-vpn 让 App 能创建/起停 VPN 配置，这一项才让系统肯加载这枚扩展。
+	     上一轮 arm D 证到了前半（侧载注入的 allow-vpn 系统认），后半从头到尾没答过话，
+	     所以这两项同时在场才是本轮要拿的读数。 -->
+	<key>com.apple.developer.networking.networkextension</key>
+	<array>
+		<string>packet-tunnel-provider</string>
+	</array>
+	<!-- 与其余三枚扩展同一个 App Group：隧道这边写的诊断日志，
+	     要靠主 App 前台搬去服务端。没有它，扩展就是一本没人来读的现场。 -->
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>group.com.quizgate.ios</string>
+	</array>
+</dict>
+</plist>

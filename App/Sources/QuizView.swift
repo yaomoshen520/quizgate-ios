@@ -6,6 +6,10 @@ import QuizGateKit
 struct QuizView: View {
     @EnvironmentObject var model: AppModel
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.horizontalSizeClass) private var horizontalSize
+
+    /// 和首页同一个判据：宽屏上题干和选项都收进限宽列，别拉成横幅。
+    private var wide: Bool { horizontalSize == .regular }
 
     var body: some View {
         ZStack {
@@ -19,16 +23,28 @@ struct QuizView: View {
         }
     }
 
+    /// 选项列数。宽屏两列、窄屏一列，和首页卡片同一个道理：
+    /// 四个选项在 iPad 上竖成一列时，最后一个离题干有一屏远，孩子点它是靠记忆而不是靠读题。
+    private var optionColumns: [GridItem] {
+        if wide { return [GridItem(.adaptive(minimum: 280), spacing: Theme.Space.s4)] }
+        return [GridItem(.flexible(), spacing: Theme.Space.s4)]
+    }
+
     private func content(_ question: Quizgate_Question) -> some View {
         ScrollView {
             VStack(alignment: .leading, spacing: Theme.Space.s5) {
                 HStack {
+                    // 三枚标签在窄屏上会挤到「关闭」那颗按钮 off-screen，所以标签可截断、
+                    // 按钮不可压缩：知识点名字长是常态，关闭入口消失了孩子就退不出这一屏。
                     Chip(text: label(question.subject))
+                        .fixedSize(horizontal: true, vertical: false)
                     Chip(text: "第 \(question.grade) 年级")
+                        .fixedSize(horizontal: true, vertical: false)
                     if !question.knowledgePoint.isEmpty {
                         Chip(text: question.knowledgePoint)
+                            .frame(maxWidth: wide ? 260 : 140, alignment: .leading)
                     }
-                    Spacer()
+                    Spacer(minLength: Theme.Space.s2)
                     Button {
                         dismiss()
                     } label: {
@@ -44,11 +60,13 @@ struct QuizView: View {
                     .foregroundStyle(Theme.Palette.ink)
                     .fixedSize(horizontal: false, vertical: true)
 
-                ForEach(Array(question.options.enumerated()), id: \.offset) { index, option in
-                    OptionButton(text: option, chosen: model.explanation != nil) {
-                        Task { await model.submitAnswer(index: index) }
+                LazyVGrid(columns: optionColumns, alignment: .leading, spacing: Theme.Space.s4) {
+                    ForEach(Array(question.options.enumerated()), id: \.offset) { index, option in
+                        OptionButton(text: option, chosen: model.explanation != nil) {
+                            Task { await model.submitAnswer(index: index) }
+                        }
+                        .disabled(model.busy || model.explanation != nil)
                     }
-                    .disabled(model.busy || model.explanation != nil)
                 }
 
                 if model.busy && model.explanation == nil {
@@ -76,7 +94,9 @@ struct QuizView: View {
                     Button {
                         Task { await model.loadQuestion() }
                     } label: {
-                        Text("换一道")
+                        // 「新题」两个字是承诺：答错之后屏幕上换掉的必须是另一道题，
+                        // 而不是这一道再来一遍（旧服务端有过那条回退，现在客户端会重试抹平）。
+                        Text("看一道新题")
                             .frame(maxWidth: .infinity, minHeight: Theme.Metric.controlHeight)
                     }
                     .buttonStyle(PrimaryButtonStyle())
@@ -87,6 +107,7 @@ struct QuizView: View {
                 }
             }
             .padding(Theme.Space.s5)
+            .readableColumn()
         }
     }
 
@@ -113,6 +134,9 @@ struct QuizView: View {
             .buttonStyle(PrimaryButtonStyle())
         }
         .padding(Theme.Space.s8)
+        // 里层限宽、外层铺满：不这么写的话 iPad 上「答对了」三个字会横贯整屏，
+        // 而渐变背景必须留在外层，不然两侧会露出页面底色。
+        .frame(maxWidth: 520)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(
             LinearGradient(colors: [.white, Color(hex: 0xF2F9F4)],
@@ -138,6 +162,8 @@ struct Chip: View {
         Text(text)
             .font(.system(size: Theme.Text.caption))
             .foregroundStyle(Theme.Palette.brand700)
+            // 限了宽度就得截断，不能让知识点名字在两行里把标签撑成一块砖。
+            .lineLimit(1)
             .padding(.horizontal, Theme.Space.s3)
             .frame(height: Theme.Metric.chipHeight)
             .background(Theme.Palette.brand100)

@@ -80,6 +80,15 @@ enum Theme {
         static let progressHeight: CGFloat = 12
     }
 
+    enum Layout {
+        /// 宽屏（iPad、iPad 侧边分屏后的全宽）上内容列的宽度上限。
+        /// 不限宽的后果不是难看而是点不到：题干拉到 1000pt 一行要扫两次，
+        /// 按钮横贯整屏后拇指够着的还是最左边那一段。
+        static let maxContentWidth: CGFloat = 680
+        /// 卡片网格在宽屏上的最小列宽。低于这个数就说明屏不够宽，退回单列。
+        static let minColumnWidth: CGFloat = 320
+    }
+
     static let pageGradient = LinearGradient(
         colors: [Palette.pageTop, Palette.pageBottom],
         startPoint: .top, endPoint: .bottom
@@ -114,4 +123,38 @@ struct CardBackground: ViewModifier {
 
 extension View {
     func card() -> some View { modifier(CardBackground()) }
+}
+
+/// 宽屏限宽，窄屏铺满。
+///
+/// 双层 frame 是刻意的：里层那一圈把内容压到 `maxWidth`，外层再让这块内容在整屏里居中。
+/// 只写里层会出现「内容贴左边、右边一片空白」，只写外层等于没限宽。
+struct ReadableColumn: ViewModifier {
+    var maxWidth: CGFloat = Theme.Layout.maxContentWidth
+
+    func body(content: Content) -> some View {
+        content
+            .frame(maxWidth: maxWidth, alignment: .top)
+            .frame(maxWidth: .infinity, alignment: .top)
+    }
+}
+
+extension View {
+    func readableColumn() -> some View { modifier(ReadableColumn()) }
+
+    /// 少数几块内容比正文列更该收窄（比如答对那整屏的成功层：一句「答对了」铺满 iPad
+    /// 会变成一张横幅），所以留一个带宽度的重载，而不是再抄一遍 modifier。
+    func readableColumn(_ maxWidth: CGFloat) -> some View { modifier(ReadableColumn(maxWidth: maxWidth)) }
+}
+
+/// 卡片网格的列定义：宽屏两列、窄屏一列。
+/// 把 size class 由调用方传进来而不是在这里摸 environment，是因为三屏都要用同一份判据，
+/// 而「iPad 上现在是不是全宽」这件事一旦在两处各判一次，迟早有一处判错。
+func cardGridColumns(wide: Bool) -> [GridItem] {
+    if wide {
+        return [GridItem(.adaptive(minimum: Theme.Layout.minColumnWidth,
+                                   maximum: Theme.Layout.maxContentWidth),
+                         spacing: Theme.Space.s5)]
+    }
+    return [GridItem(.flexible(), spacing: Theme.Space.s5)]
 }

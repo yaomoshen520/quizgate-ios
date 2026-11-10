@@ -8,6 +8,11 @@ import QuizGateKit
 /// 时长只能由聚合阈值事件推算，精度上限就是阈值粒度。显示到秒是在骗孩子。
 struct HomeView: View {
     @EnvironmentObject var model: AppModel
+    @Environment(\.horizontalSizeClass) private var horizontalSize
+
+    /// 宽屏 = iPad（以及 iPad 上的全屏分栏）。判据只有这一处：
+    /// 首页、答题页共用同一个 `wide`，两屏的排版才不会一个两列一个单列。
+    private var wide: Bool { horizontalSize == .regular }
 
     var body: some View {
         ZStack {
@@ -16,8 +21,14 @@ struct HomeView: View {
                 VStack(alignment: .leading, spacing: Theme.Space.s5) {
                     statusHero
                     if model.state.shieldApplied { answerCard }
-                    countdownCard
-                    permissionCard
+                    // 宽屏上这三块并两列；诊断卡和故障卡刻意留在整列宽，
+                    // 它们的内容是长句子和日志行，两列会把每行都劈成两段。
+                    LazyVGrid(columns: cardGridColumns(wide: wide), alignment: .leading,
+                              spacing: Theme.Space.s5) {
+                        countdownCard
+                        permissionCard
+                        if !model.state.faults.isEmpty { faultCard }
+                    }
                     shieldDebugCard
                     if let note = model.monitoringNote {
                         BannerView(text: note, tone: .warn)
@@ -25,9 +36,9 @@ struct HomeView: View {
                     if let banner = model.banner {
                         BannerView(text: banner, tone: .danger)
                     }
-                    if !model.state.faults.isEmpty { faultCard }
                 }
                 .padding(Theme.Space.s5)
+                .readableColumn()
             }
         }
     }
@@ -139,6 +150,12 @@ struct HomeView: View {
                           ok: model.state.lastSyncAtMs != nil)
             PermissionRow(name: "已绑定到家长账号",
                           ok: model.state.deviceBound)
+            // 「到点提示」这一行不是一格勾，是一句话：排没排进系统、排在几分钟后、
+            // 没排是为啥，家长拿这一行才能把「提示不准时」和「压根没排上」分开。
+            Text(model.promptNote)
+                .font(.system(size: Theme.Text.caption))
+                .foregroundStyle(Theme.Palette.inkFaint)
+                .fixedSize(horizontal: false, vertical: true)
         }
         .card()
     }
@@ -166,12 +183,24 @@ struct HomeView: View {
                 .buttonStyle(.bordered)
                 .controlSize(.large)
             }
-            Button { model.debugProbeVpn() } label: {
-                Text("试存 VPN 配置（探测侧载认不认 VPN 权限）")
+            Button { model.debugVpnCutoff(true) } label: {
+                Text("试一次掐网")
                     .frame(maxWidth: .infinity, minHeight: Theme.Metric.controlHeight)
             }
             .buttonStyle(.bordered)
             .controlSize(.large)
+            Button { model.debugVpnCutoff(false) } label: {
+                Text("试一次放行")
+                    .frame(maxWidth: .infinity, minHeight: Theme.Metric.controlHeight)
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.large)
+            // 这一行是本轮的读数落点：起隧道是异步的，"受理"和"扩展真起来了"隔着一格 status，
+            // 而家长手里只有这一行能把两者分开看。
+            Text(model.vpnNote)
+                .font(.system(size: Theme.Text.caption))
+                .foregroundStyle(Theme.Palette.inkFaint)
+                .fixedSize(horizontal: false, vertical: true)
         }
         .card()
     }

@@ -22,12 +22,6 @@ jobs:
       - name: Generate Swift protobuf
         run: bash tools/gen-proto.sh
 
-      # VPN 探测要一枚能过「必须有身份数据」那一格的一次性 p12。现生成、不入库：
-      # 这是公开仓库，私钥提交上去就永久泄露。必须在 xcodegen 之前跑，
-      # 工程文件生成时看不到这个文件，它就进不了 Copy Bundle Resources。
-      - name: Generate throwaway probe identity
-        run: bash tools/gen-probe-p12.sh
-
       - name: Generate Xcode project
         run: xcodegen generate --spec project.yml
 
@@ -68,7 +62,7 @@ jobs:
           fi
           echo "闸门自检通过（false -> $selfcheck）"
 
-          SCHEMES="QuizGateKit QuizGateKitTests QuizGateMonitor QuizGateShieldConfig QuizGateShieldAction QuizGate"
+          SCHEMES="QuizGateKit QuizGateKitTests QuizGateMonitor QuizGateShieldConfig QuizGateShieldAction QuizGateTunnel QuizGate"
 
           # 反面哨兵：上面这串 scheme 名必须真的都在工程里。
           # 名字写错时 xcodebuild 报的是「Scheme X is not currently loaded」，
@@ -209,12 +203,6 @@ jobs:
       - name: Generate Swift protobuf
         run: bash tools/gen-proto.sh
 
-      # VPN 探测要一枚能过「必须有身份数据」那一格的一次性 p12。现生成、不入库：
-      # 这是公开仓库，私钥提交上去就永久泄露。必须在 xcodegen 之前跑，
-      # 工程文件生成时看不到这个文件，它就进不了 Copy Bundle Resources。
-      - name: Generate throwaway probe identity
-        run: bash tools/gen-probe-p12.sh
-
       - name: Generate Xcode project
         run: xcodegen generate --spec project.yml
 
@@ -252,12 +240,6 @@ jobs:
           APP="$PROD/QuizGate.app"
           [ -d "$APP" ] || { echo "找不到 $APP，前面那步没真产出 device 包" >&2; exit 1; }
 
-          # 探测包必须有那枚一次性 p12：Swift 那边会老实记「包内没有 QuizGateProbe.p12」，
-          # 但那意味着整轮手机往返白跑。签封条之前先在这里断掉。
-          [ -s "$APP/QuizGateProbe.p12" ] \
-            || { echo "p12 没进 app bundle（xcodegen 早于生成步跑了？），这枚包测不出身份那一格" >&2
-                 ls -l "$APP" | head -30 >&2; exit 1; }
-
           # application-identifier 这一条从来就不写在 .entitlements 里：它是 Xcode 从描述文件
           # 读出来、签进二进制的那一项（对比 kingstinct 那四个 target 的 entitlements，也只有
           # family-controls + App Group）。我们 ad-hoc 签、没有描述文件，所以没人替我们写它，
@@ -265,7 +247,7 @@ jobs:
           # 「某缺少"application-identifier"授权的App曾尝试管理用量预算」——
           # DeviceActivity 的用量预算就是靠这个串认调用者的。
           # 这里手工补，team id 沿用巨魔自己的约定（TROLLTROLL），后缀用每个 target 自己的
-          # bundle id。仓库里那四份 plist 保持不动，将来上真证书时那份还是 Xcode 能直接用的。
+          # bundle id。仓库里那五份 plist 保持不动，将来上真证书时那份还是 Xcode 能直接用的。
           TEAMID=TROLLTROLL
           mkdir -p sigents-tmp
           make_ents() { # make_ents <repo-entitlements> <bundle-id> <out-plist>
@@ -277,13 +259,15 @@ jobs:
           }
 
           # 三个 extension 必须在 App 的 PlugIns 里，缺任何一个装上去都是个哑闸门：
-          # 没有 monitor extension 就没有计时，没有 shield 就没有拦截。
-          # 而 project.yml 里三个 extension 目标是 SKIP_INSTALL: YES，
+          # 没有 monitor extension 就没有计时，没有 shield 就没有拦截，
+          # 没有 tunnel 就没有本轮要问系统的那一枚 provider 扩展。
+          # 而 project.yml 里四枚 extension 目标全是 SKIP_INSTALL: YES，
           # 「依赖列了就会被嵌进去」我只是推测，没有实测过，所以这里自己搬并当场点验。
           mkdir -p "$APP/PlugIns"
           for spec in "QuizGateMonitor:com.quizgate.ios.monitor:Extensions/Monitor/Monitor.entitlements" \
                       "QuizGateShieldConfig:com.quizgate.ios.shieldconfig:Extensions/ShieldConfig/ShieldConfig.entitlements" \
-                      "QuizGateShieldAction:com.quizgate.ios.shieldaction:Extensions/ShieldAction/ShieldAction.entitlements"; do
+                      "QuizGateShieldAction:com.quizgate.ios.shieldaction:Extensions/ShieldAction/ShieldAction.entitlements" \
+                      "QuizGateTunnel:com.quizgate.ios.tunnel:Extensions/Tunnel/Tunnel.entitlements"; do
             name=${spec%%:*}; rest=${spec#*:}; bid=${rest%%:*}; ents=${rest#*:}
             dest="$APP/PlugIns/$name.appex"
             if [ ! -d "$dest" ]; then
@@ -340,6 +324,35 @@ jobs:
           grep -qa "com.apple.developer.networking.vpn.api" "$APP/QuizGate" \
             || { echo "宿主二进制里没有 vpn.api 这条 entitlement：本轮读数是签名层的假阴性" >&2; exit 1; }
 
+          # tunnel 扩展单独一套断言，绝不套上面那个循环：它没有 family-controls，
+          # 拿那一格去要求它，每次都是假失败（而假失败会被读成"权限被系统拒"，正好是本轮最怕的误读）。
+          # 它要的是另一条：com.apple.developer.networking.networkextension = packet-tunnel-provider。
+          # 这条和宿主那枚 allow-vpn 是两回事 —— allow-vpn 让 App 能建/起停 VPN 配置（上一轮 arm D 已证系统认），
+          # networkextension 才决定系统肯不肯**加载我们自己的这枚 provider 扩展**，至今没答过话。
+          TUNNEL="$APP/PlugIns/QuizGateTunnel.appex"
+          echo "--- entitlements: QuizGateTunnel ---"
+          codesign -d --entitlements :- "$TUNNEL" 2>&1 | head -60
+          tents=$(codesign -d --entitlements :- "$TUNNEL" 2>&1)
+          echo "$tents" | grep -q "com.apple.developer.networking.networkextension" \
+            || { echo "tunnel 的签名里丢了 networkextension：这枚扩展根本不会被系统加载" >&2; exit 1; }
+          echo "$tents" | grep -q "packet-tunnel-provider" \
+            || { echo "tunnel 的 networkextension 里没有 packet-tunnel-provider 这一档取值" >&2; exit 1; }
+          echo "$tents" | grep -q "group.com.quizgate.ios" \
+            || { echo "tunnel 的签名里丢了 App Group：扩展写的日志没人搬得走" >&2; exit 1; }
+          tg=$(plutil -extract application-identifier raw -o - "sigents-tmp/QuizGateTunnel.plist") \
+            || { echo "tunnel 的合并 plist 里没有 application-identifier" >&2; exit 1; }
+          [ "$tg" = "$TEAMID.com.quizgate.ios.tunnel" ] \
+            || { echo "tunnel 的 application-identifier 是 $tg" >&2; exit 1; }
+          exe=$(plutil -extract CFBundleExecutable raw -o - "$TUNNEL/Info.plist")
+          grep -qa "$TEAMID.com.quizgate.ios.tunnel" "$TUNNEL/$exe" \
+            || { echo "tunnel 的二进制里没有那条 application-identifier：entitlements 没进签名封条" >&2; exit 1; }
+          # 扩展点标识符也必须当场点验：写成 packet-tunnel-provider（那是 entitlement 的取值）
+          # 系统一样能装能签，只是永不把这枚扩展当成 tunnel provider 去加载，
+          # 于是真机上的表现是「VPN 起不来」，看起来完全像权限被拒。
+          /usr/libexec/PlistBuddy -c "Print :NSExtension:NSExtensionPointIdentifier" "$TUNNEL/Info.plist" \
+            | grep -qx "com.apple.networkextension.packet-tunnel" \
+            || { echo "tunnel 的扩展点标识符不是 com.apple.networkextension.packet-tunnel" >&2; exit 1; }
+
           # 架构也得当场点验：巨魔装一个只有 x86_64 切片的包，报错会写成让人误以为是签名问题的样子。
           echo "--- 宿主可执行文件架构 ---"
           lipo -archs "$APP/QuizGate"
@@ -355,14 +368,16 @@ jobs:
           ( cd staging && zip -qry ../QuizGate.ipa Payload )
           echo "===== ipa 内容（顶层） ====="
           unzip -l QuizGate.ipa | grep -E "Payload/QuizGate.app/$|PlugIns/.*appex/$|QuizGate.app/QuizGate$"
-          echo "===== 三个 extension 齐不齐 ====="
+          echo "===== 四枚 extension 齐不齐 ====="
           # 按 .appex 目录名去重计数：条目行里嵌套文件也带 ".appex/"，直接 grep -c 会数出几十行，
-          # 那样的「>= 3」是假的 —— 少一个 extension 也照样过。
+          # 那样的「>= 4」是假的 —— 少一枚 extension 也照样过。
           names=$(unzip -l QuizGate.ipa | grep -oE 'PlugIns/[^/]+\.appex/' | sort -u)
           echo "$names"
           n=$(printf '%s\n' "$names" | grep -c .)
           echo "appex 去重后：$n 个"
-          [ "$n" -eq 3 ] || { echo "ipa 里不是恰好 3 个 appex" >&2; exit 1; }
+          # 恰好 4：monitor + shieldconfig + shieldaction + tunnel。
+          # 少哪一枚都是不同的病：少 monitor 是没计时，少 tunnel 是本轮那枚扩展压根没进包。
+          [ "$n" -eq 4 ] || { echo "ipa 里不是恰好 4 个 appex" >&2; exit 1; }
           ls -l QuizGate.ipa
           shasum -a 256 QuizGate.ipa
 

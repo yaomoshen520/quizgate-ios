@@ -1,7 +1,6 @@
 import Combine
 import FamilyControls
 import Foundation
-import NetworkExtension
 import QuizGateKit
 import SwiftUI
 import UIKit
@@ -27,12 +26,21 @@ final class AppModel: ObservableObject {
     /// 通知权限的原始状态，不是 Bool：「还没问过」还能自己弹一次窗，
     /// 「被拒过」在 App 里永远点不出来，两格要走的两颗按钮完全不同。
     @Published var promptStatus: UNAuthorizationStatus?
+    /// 到点提示排没排进系统、排在几分钟后。首页那一行用它。
+    ///
+    /// 这一格必须有：「提示不准时」和「压根没排上」在家长后台长得一模一样，
+    /// 而这两件事的修法完全不同（前者是通道天花板，后者是权限没给）。
+    @Published var promptNote = "到点提示还没排"
+
+    /// VPN 掐网通道的最新一句话，直接由 VpnCutoff 喂。首页那一行和 tag=vpn 日志同源。
+    @Published var vpnNote = "VPN 通道还没试过"
 
     /// 自测用 .individual（不需要 Family Sharing 折腾），上线用 .child。
     /// 做成开关是因为 .child 的系统弹窗要家长在同一家庭组里点，调试时很难反复触发。
     @Published var useChildAuthorization = true
 
     private let monitoring = MonitoringController()
+    private let cutoff = VpnCutoff()
     private var heartbeatTask: Task<Void, Never>?
     private var signal: DarwinSignal?
 
@@ -43,12 +51,6 @@ final class AppModel: ObservableObject {
     /// 上一次因为盾牌状态而给孩子发过提示没有。同上，只在翻转的那一次动手，
     /// 否则每 30 秒一次心跳就往通知中心塞一条。
     private var lastPromptedShield: Bool?
-
-    /// VPN 探测当前该跑第几份配置；见 probeVpnArm 里那道量具闸的说明（调试，查完整段删）。
-    private var vpnProbeSeq = 0
-
-    /// 本轮 p12 到底取到了没有，一句话。跟着每一行 arm 日志落盘（调试，查完整段删）。
-    private var vpnProbeNote = "身份资源=未探测"
 
     /// 一轮监控区间的寿命上界：本轮 schedule 最长寿到当天 23:59，所以超过 20 小时
     /// 就一定已经过去了，该重配。ensureMonitoringArmed 用它判旧。
@@ -78,6 +80,14 @@ final class AppModel: ObservableObject {
             Task { @MainActor in await self?.loadQuestion() }
         }
         Task { await refreshPromptStatus() }
+        cutoff.onChange = { [weak self] text in
+            Task { @MainActor in self?.vpnNote = text }
+        }
+        // 首屏先翻译一次当前判定，再把系统那边的现状读一遍。
+        // 这两步分开是有原因的：apply 只在「想要的」和「上次落地的」不一致时动手，
+        // 而设备重启/家长在设置里手动关掉 VPN 之后，这两者会不一致地对不上账。
+        syncVpnCutoff()
+        cutoff.refresh(nowMs: state.nowMs())
     }
 
     /// 前台补一次体检：本轮大概还活着就不动，只有确认过期/没记录才重配。
@@ -142,6 +152,9 @@ final class AppModel: ObservableObject {
             Task { @MainActor in
                 self?.reload()
                 self?.promptForShield()
+                // 扩展写完盾牌就吼这一声，VPN 必须跟着同一次判定走。
+                // 少了这一跳，"系统里盾牌落下了"和"网还通着"能同时成立到下一次心跳。
+                self?.syncVpnCutoff()
             }
         }
         s.start()
@@ -297,17 +310,27 @@ final class AppModel: ObservableObject {
                                    + " activity=" + activity + " armed=" + String(armed),
                                level: armed ? .info : .error, nowMs: startedAtMs)
                 persist()
+                // 到点那一声明白地排给系统，不等时刻到了再发：那一刻孩子正玩在别家 App 里，
+                // 我们的进程多半已经被划掉，`promptForShield()` 那条根本跑不到。
+                // 第 1 档阈值就是盾牌该落的那一刻，所以排期和落盾用的是同一个数。
+                ShieldPrompt.scheduleDue(dueMs: startedAtMs + Int64(step) * 60_000, nowMs: startedAtMs)
+                promptNote = "到点提示已排进系统：" + String(step) + " 分钟后（App 被划掉也照样响）"
             case .noSelection:
                 state.monitoringActivity = nil
                 state.monitoringStartedAtMs = nil
                 persist()
                 monitoringNote = "还没选要管的 App"
+                ShieldPrompt.cancelDue()
+                promptNote = "到点提示没排：还没选要管的 App"
                 DiagLog.record("monitor", "重配跳过：还没有可管的 App 选择", level: .warn, nowMs: startedAtMs)
             case .ruleDisabled:
                 state.monitoringActivity = nil
                 state.monitoringStartedAtMs = nil
                 persist()
                 monitoringNote = "家长关掉了闸门，或阈值是 0"
+                // 闸门一关就必须把排好的那一条撤掉：留着就是「明明不拦了，孩子还被催着答题」。
+                ShieldPrompt.cancelDue()
+                promptNote = "到点提示没排：闸门是关的"
                 DiagLog.record("monitor", "重配跳过：规则关闭或阈值为 0", nowMs: startedAtMs)
             }
         } catch {
@@ -315,6 +338,8 @@ final class AppModel: ObservableObject {
             state.recordFault(monitoringNote ?? "监控配置失败")
             persist()
             reportGateEvent(kind: .gateInterrupted, detail: monitoringNote ?? "监控配置失败")
+            ShieldPrompt.cancelDue()
+            promptNote = "到点提示没排：系统监控没配上"
             DiagLog.record("monitor",
                            "重配抛错 desc=" + error.localizedDescription
                                + " activity=" + (state.monitoringActivity ?? "nil"),
@@ -376,6 +401,9 @@ final class AppModel: ObservableObject {
             reconcileShield()
             persist()
             promptForShield()
+            // 盾牌/判定之外还要续一次 VPN 的现状：startTunnel 返回时只是"受理"，
+            // 扩展载没载起来落在后面那格 status 上，而心跳是唯一稳定回来的地方。
+            cutoff.refresh(nowMs: state.nowMs())
             logHeartbeat(reply.ruleChanged)
             await flushOutbox()
             await flushLogs()
@@ -416,38 +444,71 @@ final class AppModel: ObservableObject {
         }
         busy = true
         defer { busy = false }
-        var request = Quizgate_NextQuestionRequest()
-        // 年级一律留 0，让服务端按 child_profile 决定（它那边 grade<=0 就回退到孩子真实年级）。
-        // 设备里那个 childGrade 从来没有任何地方给它赋过值，永远是默认 3——带着 3 去抽题，
-        // 5 年级的题库一条也命中不了，服务端只会回一个没有题的应答。设备猜不到，就别猜。
-        request.knowledgePoint = state.ledger.lastKnowledgePoint ?? ""
-        request.excludeQuestionID = state.ledger.lastQuestionId ?? ""
-        do {
-            let reply: Quizgate_NextQuestionReply = try await api.post(
-                "next-question", token: token, request: request, reply: Quizgate_NextQuestionReply.self
-            )
-            applyServerTime(reply.serverTimeMs)
-            state.rule = mapRule(reply.rule)
-            persist()
-            // 「服务端没题可给」和「给了一道题」是两个世界：没有这道判断时，空应答会被当成
-            // 一道题渲染——空白题干、四个空选项，孩子点哪都算错。
-            guard reply.hasQuestion else {
-                banner = "这孩子的题库里没有核对过的题，请家长先录题"
-                DiagLog.record("quiz", "取题空手而回：服务端没给题（请求 kp=" + request.knowledgePoint + "）",
-                               level: .warn, nowMs: state.nowMs())
-                return
+        let exclude = state.ledger.lastQuestionId ?? ""
+        var knowledgePoint = state.ledger.lastKnowledgePoint ?? ""
+        var reply: Quizgate_NextQuestionReply?
+        var failure = ""
+        // 最多两轮：第一轮照旧要「同知识点变式题」，撞车就清空知识点再要一次。
+        // 撞车 = 服务端把刚答错那道又发了一遍。这枚包要装的旧服务端确实有那条回退分支
+        // （同知识点只剩一道题时宁可原题重发），孩子看到的就还是这道题，第二次靠记选项就能过。
+        // 客户端先把它抹平，服务端那一版改了之后这一轮自然走不到。
+        for attempt in 0..<2 {
+            do {
+                let got = try await fetchQuestion(api: api, token: token,
+                                                  knowledgePoint: knowledgePoint, exclude: exclude)
+                let sameAsMissed = got.hasQuestion && !exclude.isEmpty && got.question.questionID == exclude
+                if sameAsMissed && attempt == 0 {
+                    DiagLog.record("quiz", "服务端重发了刚答错那道 id=" + exclude
+                                       + "，改成不限知识点再要一次", level: .warn, nowMs: state.nowMs())
+                    knowledgePoint = ""
+                    continue
+                }
+                reply = got
+                break
+            } catch let error as ReportUnavailable {
+                failure = error.message
+                break
+            } catch {
+                failure = "取题失败：" + error.localizedDescription
+                break
             }
-            DiagLog.record("quiz", "取到题 id=" + reply.question.questionID
-                               + " kp=" + reply.question.knowledgePoint,
-                           nowMs: state.nowMs())
-            question = reply.question
-            explanation = nil
-            answeredCorrect = false
-        } catch let error as ReportUnavailable {
-            banner = error.message
-        } catch {
-            banner = "取题失败：\(error.localizedDescription)"
         }
+        guard let reply else {
+            // 两轮都没走到「拿到回包」这一步，说明网络那一跳就断了，banner 里已经是原因。
+            if !failure.isEmpty { banner = failure }
+            return
+        }
+        applyServerTime(reply.serverTimeMs)
+        state.rule = mapRule(reply.rule)
+        persist()
+        // 「服务端没题可给」和「给了一道题」是两个世界：没有这道判断时，空应答会被当成
+        // 一道题渲染——空白题干、四个空选项，孩子点哪都算错。
+        guard reply.hasQuestion else {
+            banner = "这孩子的题库里没有核对过的题，请家长先录题"
+            DiagLog.record("quiz", "取题空手而回：服务端没给题（请求 kp=" + knowledgePoint + "）",
+                           level: .warn, nowMs: state.nowMs())
+            return
+        }
+        DiagLog.record("quiz", "取到题 id=" + reply.question.questionID
+                           + " kp=" + reply.question.knowledgePoint,
+                       nowMs: state.nowMs())
+        question = reply.question
+        explanation = nil
+        answeredCorrect = false
+    }
+
+    /// 取题这一跳单独抽出来：换知识点重试和首发的唯一区别就是那两个入参。
+    ///
+    /// 年级一律留 0，让服务端按 child_profile 决定（它那边 grade<=0 就回退到孩子真实年级）。
+    /// 设备里那个 childGrade 从来没有任何地方给它赋过值，永远是默认 3——带着 3 去抽题，
+    /// 5 年级的题库一条也命中不了，服务端只会回一个没有题的应答。设备猜不到，就别猜。
+    private func fetchQuestion(api: QuizGateAPI, token: String,
+                               knowledgePoint: String, exclude: String) async throws -> Quizgate_NextQuestionReply {
+        var request = Quizgate_NextQuestionRequest()
+        request.knowledgePoint = knowledgePoint
+        request.excludeQuestionID = exclude
+        return try await api.post("next-question", token: token, request: request,
+                                  reply: Quizgate_NextQuestionReply.self)
     }
 
     func submitAnswer(index: Int) async {
@@ -587,6 +648,31 @@ final class AppModel: ObservableObject {
                 banner = "闸门现在拦不住 App：\(label(why))"
             }
         }
+        // 这一行刻意在 if 外面：盾牌那一格早就落着时 reconcile 一个字节都不写，
+        // 但 VPN 这条通道必须照样跟着判定走 —— 否则「系统认为在拦、网其实通着」
+        // 会一路保持到孩子把 App 杀掉重开。VpnCutoff 自己那道幂等闸负责把重复指令吃掉。
+        syncVpnCutoff()
+    }
+
+    /// 把「闸门此刻想不想拦」翻译成 VPN 的起与停。
+    ///
+    /// 判据是 decision.wantsShield，不是 state.shieldApplied：后者记的是 ManagedSettings
+    /// 那一格写没写进去，属旧通道。走 VPN 这条路之后真把孩子拦住的是断网，
+    /// 所以这道翻译必须挂在判定上；挂在旧通道的执行结果上，等于把新通道绑死在旧通道的天花板上。
+    ///
+    /// 也不在 cannotEnforce 那一档掐网：它的含义是「我们连该不该拦都还不知道」，
+    /// 在一台规则都没落地的新装设备上先把网掐了，是把诊断期过成事故。
+    private func syncVpnCutoff() {
+        cutoff.apply(wantsCutoff: decision.wantsShield, nowMs: state.nowMs())
+    }
+
+    /// 手动试一次掐网/放行（调试，查完整段删）。
+    ///
+    /// 为什么要有这两颗按钮：本轮要问系统的是「我们自己的这枚 tunnel provider 扩展
+    /// 到底载不载得起来」，而正常路径要等阈值攒满才第一次起隧道。真机上把这一等
+    /// 压成一次点击，读数当天就能拿到。
+    func debugVpnCutoff(_ wantsCutoff: Bool) {
+        cutoff.forceApply(wantsCutoff: wantsCutoff, nowMs: state.nowMs())
     }
 
     // MARK: - 落盾诊断（侧载执行层取证，调试用，查完整段删）
@@ -608,115 +694,6 @@ final class AppModel: ObservableObject {
         persist()
         DiagLog.record("shield", "主App清盾", level: .warn)
         Task { await flushLogs() }
-    }
-
-    /// VPN 可行性探测 v3（调试，查完整段删）。
-    ///
-    /// 上一轮（6f6a406）三份配置全败，但报错逐字段在挪：A/C 说「认证方式不支持」，
-    /// B 显式设成 .certificate 后改口说「Missing identity」。所以那次 code=1
-    /// 确实是配置校验层的说法，权限层从头到尾没答过话 —— 命中我预先登记的分支。
-    ///
-    /// 这一轮把「身份」那一格也填上：CI 用 tools/gen-probe-p12.sh 现生成一枚
-    /// 一次性自签名 p12 打进资源包（私钥不入库，公开仓库里只可能是脚本不是钥匙）。
-    /// D 是决定性那枚、排在最前；B/C 沿用上一轮的标签原样做对照 —— 它们必须复现
-    /// 旧报错，否则说明这枚包跑的根本不是新代码，D 的读数也就不能信。
-    ///
-    /// 判据：
-    /// D 存成功 ⟹ 侧载注入的 Personal VPN entitlement 被认，直接开按 App 掐流量的原型；
-    /// D 又换了一格新报错 ⟹ 还卡在配置层，继续劈；
-    /// D 报出权限口径的话（不再是「某字段不支持」这种配置话术）⟹ 权限层说了「不」，
-    ///   回到「要不要上付费开发者账号」那个决定。
-    /// （上一轮的 A「只关扩展认证」已删：它和 C 逐字同码，是枚空对照。）
-    func debugProbeVpn() {
-        // D：证书认证 + 真实身份数据。和 B 只差 identityData 一个字段。
-        let (identityData, identityNote) = probeIdentityBundle()
-        let d = NEVPNProtocolIKEv2()
-        d.serverAddress = "quizgate-probe.invalid"
-        d.useExtendedAuthentication = false
-        d.authenticationMethod = NEVPNIKEAuthenticationMethod.certificate
-        d.localIdentifier = "quizgate-probe"
-        d.remoteIdentifier = "quizgate-probe"
-        d.identityData = identityData
-        d.identityDataPassword = "quizgate"
-
-        // B：上一轮的证书认证形状，不带身份 —— 预期仍报 Missing identity。
-        let b = NEVPNProtocolIKEv2()
-        b.serverAddress = "quizgate-probe.invalid"
-        b.useExtendedAuthentication = false
-        b.authenticationMethod = NEVPNIKEAuthenticationMethod.certificate
-        b.localIdentifier = "quizgate-probe"
-        b.remoteIdentifier = "quizgate-probe"
-
-        // C：最早那枚包的原样 —— 预期仍报 Unsupported authenticationMethod。
-        let c = NEVPNProtocolIKEv2()
-        c.serverAddress = "quizgate-probe.invalid"
-
-        // 再点一次就从头再跑，方便连点两轮对拍。
-        vpnProbeSeq = 0
-        vpnProbeNote = identityNote
-        probeVpnArm(["D-证书认证带身份", "B-显式证书认证", "C-上一轮原样"], [d, b, c], 0)
-    }
-
-    /// 从资源包里取那枚一次性 p12，并把「取到了没有、多大」压成一句话。
-    ///
-    /// 这句话必须跟着每行 arm 日志一起落：缺了它，「CI 没生成 p12」「p12 没进包」
-    /// 和「身份被系统拒」在日志里是同一种长相，而这三件事的结论完全不同。
-    private func probeIdentityBundle() -> (Data?, String) {
-        guard let url = Bundle.main.url(forResource: "QuizGateProbe", withExtension: "p12") else {
-            return (nil, "身份资源=包内没有 QuizGateProbe.p12")
-        }
-        guard let data = try? Data(contentsOf: url) else {
-            return (nil, "身份资源=读不到 " + url.lastPathComponent)
-        }
-        return (data, "身份资源=p12 " + String(data.count) + " 字节")
-    }
-
-    /// 逐份存、逐份记，跑完就停。三份共用 `NEVPNManager` 这一个槽位，所以必须串行：
-    /// 并发提交的话后一份会盖掉前一份，日志就分不清是哪份配置的结果。
-    ///
-    /// 那道 seq 闸不是保险丝而是量具：上一轮一次点击落了 36 行同文案日志，
-    /// 「手指连点」和「系统把同一个 completionHandler 投递了多次」两种解释我分不开。
-    /// 后者对串行递归是致命的（每份配置的重复回调都会再往下开一份，指数放大），
-    /// 所以这里只让「当前该跑的那一下」往下走，多余的回调原样记一行丢在日志里 ——
-    /// 真投回来的次数就写在 tag=vpn 里，不用再猜。
-    private func probeVpnArm(_ labels: [String], _ protos: [NEVPNProtocol], _ i: Int) {
-        if i >= protos.count { return }
-        guard i == vpnProbeSeq else {
-            DiagLog.record("vpn", "arm=" + labels[i] + " 第" + String(i)
-                               + "份重复回调，已丢弃（期望 seq=" + String(vpnProbeSeq) + "）",
-                           level: .warn)
-            return
-        }
-        vpnProbeSeq = i + 1
-        // 在主 actor 这一侧先把话抄下来：回调跑在哪个线程不由我们定，
-        // 隔着一层闭包去读 @MainActor 属性是并发警告，读到旧值更是假读数。
-        let note = vpnProbeNote
-        let manager = NEVPNManager.shared()
-        manager.`protocol` = protos[i]
-        manager.isEnabled = false
-        manager.saveToPreferences { err in
-            let e = err as NSError?
-            // 一行日志拆成几句短赋值：把三元和五段拼接写成同一个表达式，
-            // Swift 编译器会直接甩一句「unable to type-check this expression in
-            // reasonable time」然后把整个 target 编挂（上一枚包就是这么红的）。
-            var line = "存 VPN 配置成功：系统认这枚 Personal VPN entitlement"
-            if let e = e {
-                // 同一句「失败」在配置层和权限层是两个结论，而 domain/code 分不开它们
-                // （上一轮就是被这一点卡住）。Apple 把口径写在 reason/suggest 里，
-                // 所以这三格全捞，捞空了就落一个 - 表示「系统确实没给」。
-                line = "存 VPN 配置失败 domain=" + e.domain
-                line += " code=" + String(e.code)
-                line += " desc=" + e.localizedDescription
-                line += " reason=" + (e.localizedFailureReason ?? "-")
-                line += " suggest=" + (e.localizedRecoverySuggestion ?? "-")
-            }
-            DiagLog.record("vpn", "arm=" + labels[i] + " " + note + " " + line,
-                           level: e == nil ? .info : .error)
-            Task { @MainActor in
-                await self.flushLogs()
-                self.probeVpnArm(labels, protos, i + 1)
-            }
-        }
     }
 
     private func label(_ reason: CannotEnforceReason) -> String {

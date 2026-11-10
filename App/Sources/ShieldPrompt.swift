@@ -105,6 +105,70 @@ enum ShieldPrompt {
     static func cancel() {
         UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: [identifier])
     }
+
+    // MARK: - 到点提示（提前排进系统的那一声）
+
+    /// 和盾牌提示分开两枚 identifier：两样东西的生死时间不一样 ——
+    /// 那一条跟着盾牌状态走，这一条跟着本轮排期走，混用一枚 id 会让后写的把先写的顶掉。
+    private static let dueIdentifier = "quizgate.cycle.due"
+
+    /// 把「这一轮玩满了」那一声明明地排给系统，不等时刻到了再发。
+    ///
+    /// 为什么必须提前排：`fire()` 只有主 App 活着才发得出去，而阈值到的那一刻孩子正玩在
+    /// 别家 App 里，我们的进程多半已经被划掉了 —— 这正是上一版「提示不准时」的真因。
+    /// 本地通知请求由系统自己持有，排进去之后杀掉 App 照样投递，这是侧载包能拿到的
+    /// 唯一一种不依赖自身存活的全局提示。所以它不该是「落盾之后的补救」，而是「配好一轮时就该做的事」。
+    ///
+    /// - Parameter dueMs: 本轮阈值到点的时刻（服务器时间基准）。
+    ///   传的是**时间差**，不是绝对时刻：触发器量的是设备墙钟，而我们那套时钟换算只存在于
+    ///   `state.nowMs()` 里。两边各自换算会引入孩子改系统时钟的口子，用差值就没这件事。
+    static func scheduleDue(dueMs: Int64, nowMs: Int64) {
+        let seconds = Double(dueMs - nowMs) / 1000
+        guard seconds >= 1 else {
+            // 排在一个过去的时间点上，系统是直接丢还是立刻发没有原文可依，所以不赌：
+            // 已经过点的这一轮交给落盾那条提示，下一次重配会排到未来。
+            DiagLog.record("prompt", "到点提示没排：算出来已过 " + String(Int(-seconds)) + " 秒",
+                           level: .warn, nowMs: nowMs)
+            return
+        }
+        let content = UNMutableNotificationContent()
+        content.title = "这一轮到时间了"
+        content.body = "打开 QuizGate 答对一道题，就能接着玩。"
+        // 这一声刻意带声音，和盾牌那条相反：孩子此刻在别的 App 里，横幅可能直接被划走，
+        // 声音是唯一还能追上他的那一下。
+        content.sound = .default
+        content.threadIdentifier = "quizgate"
+        content.userInfo = ["route": "quiz"]
+        let trigger = UNTimeIntervalNotificationTrigger(timeInterval: seconds, repeats: false)
+        let request = UNNotificationRequest(identifier: dueIdentifier, content: content, trigger: trigger)
+        Task {
+            let center = UNUserNotificationCenter.current()
+            let status = await center.notificationSettings().authorizationStatus
+            guard status.promptGranted else {
+                DiagLog.record("prompt", "到点提示没排：通知权限 status="
+                                   + String(status.rawValue) + "（" + status.promptLabel + "）",
+                               level: .warn, nowMs: nowMs)
+                return
+            }
+            do {
+                // 同一个 identifier 重复 add 是替换语义，所以心跳里反复重配只会把下一次往后推，
+                // 不会在通知中心堆出一排 —— 这一点和 fire() 用固定 id 是同一个理由。
+                try await center.add(request)
+                let minutes = Int(seconds / 60)
+                DiagLog.record("prompt", "已排定到点提示 " + String(minutes) + " 分钟后",
+                               nowMs: nowMs)
+            } catch {
+                DiagLog.record("prompt", "到点提示没排上：" + error.localizedDescription,
+                               level: .error, nowMs: nowMs)
+            }
+        }
+    }
+
+    /// 家长关掉闸门、阈值改成 0、或者还没选 App 时必须撤掉这一条。
+    /// 留着它就会出现「闸门已经关了，孩子还是每隔一会儿被催去答题」。
+    static func cancelDue() {
+        UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: [dueIdentifier])
+    }
 }
 
 extension UNAuthorizationStatus {
