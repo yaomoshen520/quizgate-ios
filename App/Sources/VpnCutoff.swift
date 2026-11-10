@@ -2,37 +2,40 @@ import Foundation
 import NetworkExtension
 import QuizGateKit
 
-/// 主 App 这一侧的 VPN 掐网开关。
+/// 主 App 这一侧的 VPN 通道管家。
 ///
-/// 它不碰任何数据包，只做五件事：认出（或第一次建好）我们那枚 tunnel 配置、存进系统偏好、
-/// 起它或停它、把系统给的回答一句一行落到诊断日志里、以及每 30 秒对一次账 ——
-/// 系统那一边长成的样子和闸门想要的那一档不一致时补发一次（见 reconcile()）。
+/// 它不碰任何数据包，只做四件事：把「想要哪一档、什么时候该换」交给隧道扩展（见 VpnIntent）、
+/// 认出（或第一次建好）我们那枚 tunnel 配置并让它**常驻**、把系统给的回答一句一行落到诊断日志里、
+/// 以及每 30 秒对一次账 —— 系统那边的隧道和闸门想要的那一档不一致时补发一次（见 reconcile()）。
+///
+/// 为什么这一版不再按判定起停隧道：以前「该拦」= 起隧道、「放行」= 停隧道，于是
+/// 「到点起 VPN」这件事必须由主 App 亲手按下去，而主 App 正是会被系统划掉的那个进程 ——
+/// 阈值到的那一刻孩子玩在别家 App 里，我们多半不在。现在隧道只要闸门开着就一直连着，
+/// 判定只交一份带绝对时刻的排期过去，到点换档由扩展进程自己做。
+/// 这一改把「能不能被叫醒」这个天花板从链路上拿掉了，代价是状态栏会常驻一个 VPN 图标。
 ///
 /// 为什么"起"要分三步（存 → 重新读一份 → 起）：Apple 的口径是存完偏好之后手上那份 manager
 /// 不能再用于连接，直接 start 得到的是 .invalid。那是我们自己的用法错误，
 /// 不是系统对侧载的回答 —— 而本轮唯一要问系统的就是后者，所以必须先把前者排除掉，
 /// 否则日志里那一行分不清是谁挡的路。
-///
-/// 为什么挂在 decision 上而不是挂在盾牌写没写上：走 VPN 这条路之后，真把孩子拦住的是断网，
-/// ManagedSettings 那一格只是给系统看的证据。判定说"该拦"就该断网，判定说"放行"就该恢复。
 @MainActor
 final class VpnCutoff {
 
-    /// 一次动作的结果：applied 才允许更新 lastApplied，失败时必须留在旧值上，
+    /// 一次动作的结果：applied 才允许更新 lastUpApplied，失败时必须留在旧值上，
     /// 否则下一次心跳会以为"已经做过了"，于是要么永远起不来、要么永远停不掉。
     private struct Outcome {
         var applied: Bool
         var text: String
     }
 
-    /// 上一次真正落地的指令。心跳每 30 秒调一次 apply()，没有这道闸就成了
+    /// 上一次真正落地的起停指令。心跳每 30 秒调一次 sync()，没有这道闸就成了
     /// 每 30 秒往系统偏好里存一份 VPN 配置 —— 那本身就是可观测的骚扰。
-    private var lastApplied: Bool?
+    private var lastUpApplied: Bool?
 
-    /// 闸门「此刻想要哪一档」，和 lastApplied 分两本账记：后者只记这条指令下没下过，
+    /// 闸门「此刻要不要这条隧道」，和 lastUpApplied 分两本账记：后者只记这条指令下没下过，
     /// 这一格记系统那边应该长成什么样。分开的理由是孩子在设置里手动关掉 VPN 那一刻 ——
-    /// 指令没失效，失效的是执行结果，而 apply() 那道幂等闸比的是前者，会对不上账一路短路。
-    private var desired: Bool?
+    /// 指令没失效，失效的是执行结果，而 sync() 那道幂等闸比的是前者，会对不上账一路短路。
+    private var desiredUp: Bool?
 
     /// 为同一个对不上账的状态连续补发的次数。对上就归零。
     private var reconcileTries = 0
@@ -41,7 +44,7 @@ final class VpnCutoff {
     /// 5 次 ≈ 两个半分钟的争取，之后留给家长那条日志说话。
     private static let reconcileLimit = 5
 
-    /// 手上还有一件没做完。丢掉的指令不再致命：想要的那一档已经另记在 desired 里，
+    /// 手上还有一件没做完。丢掉的指令不再致命：想要的那一档已经另记在 desiredUp 里，
     /// 下一拍 reconcile() 会照这本账补。
     private var inFlight = false
 
@@ -55,60 +58,93 @@ final class VpnCutoff {
 
     // MARK: - 入口
 
-    /// wantsCutoff = 闸门这一刻想把这台设备断网。
-    func apply(wantsCutoff: Bool, nowMs: Int64) {
-        // 先记账再决定动不动手：下面两道闸都可能让这一条指令这一拍不落地，
-        // 而"想不想要"和"落没落地"是两回事，前者落了账 reconcile() 才有得补。
-        if desired != wantsCutoff { reconcileTries = 0 }
-        desired = wantsCutoff
-        guard wantsCutoff != lastApplied else { return }
+    /// 交一份意图出去，并保证隧道在不在按 `intent.armed` 落地。
+    ///
+    /// 两步是分开的，而且顺序不能反：意图先写。隧道这一次起不来（权限、被手动删了配置、
+    /// 或者系统正忙）都不该拦住交意图 —— 扩展哪一次被系统拉起来读的都是最新那份排期，
+    /// 反过来先起隧道再写意图，就会有一段「隧道连着、扩展手上还是上一轮的旧排期」的窗口。
+    func sync(intent: VpnIntent, nowMs: Int64) {
+        handoff(intent, nowMs: nowMs)
+        let wantsUp = intent.armed
+        if desiredUp != wantsUp { reconcileTries = 0 }
+        desiredUp = wantsUp
+        guard wantsUp != lastUpApplied else { return }
         guard !inFlight else {
-            let wanted = describe(wantsCutoff)
+            let wanted = describe(wantsUp)
             DiagLog.record("vpn", "VPN 指令没下：上一件还在路上（想要=" + wanted + "）",
                            level: .warn, nowMs: nowMs)
             return
         }
         inFlight = true
         Task {
-            let outcome = await perform(wantsCutoff: wantsCutoff, nowMs: nowMs)
+            let outcome = await perform(wantsUp: wantsUp, nowMs: nowMs)
             inFlight = false
-            if outcome.applied { lastApplied = wantsCutoff }
+            if outcome.applied { lastUpApplied = wantsUp }
             note = outcome.text
             onChange?(outcome.text)
         }
     }
 
-    /// 忽略幂等账，把同一条指令再下一次（调试按钮用）。
+    /// 忽略起停那本幂等账，把同一份意图再交一次（调试按钮用）。
     ///
-    /// 为什么要绕：孩子机上一次起隧道失败之后 lastApplied 会留在旧值上，
+    /// 为什么要绕：孩子机上一次起隧道失败之后 lastUpApplied 会留在旧值上，
     /// 于是「再点一次试试」这颗按钮什么都不做，而调试最需要的正是重按。
+    /// 意图那一半每次都照写 —— 它是排期，不是指令，重复写只是把同一个数再交出去一遍。
     /// 真闸门路径不走这里。
-    func forceApply(wantsCutoff: Bool, nowMs: Int64) {
-        lastApplied = nil
-        apply(wantsCutoff: wantsCutoff, nowMs: nowMs)
+    func forceSync(intent: VpnIntent, nowMs: Int64) {
+        lastUpApplied = nil
+        sync(intent: intent, nowMs: nowMs)
     }
 
     /// 读一次系统那边的现状；心跳每 30 秒调一次，只在状态变了的那一次落一行。
     ///
     /// 起隧道是异步的：startTunnel 返回时多半还是 .connecting，"扩展到底载没载起来"
     /// 落在后面那一格 .connected 或弹回的 .disconnected 上。所以这一格必须由心跳续上，
-    /// 不能由 apply() 那一跳的即时状态代替。
+    /// 不能由 sync() 那一跳的即时状态代替。
     func refresh(nowMs: Int64) {
         Task { await poll(nowMs: nowMs) }
     }
 
-    // MARK: - 干活的四步
+    // MARK: - 交意图
 
-    private func perform(wantsCutoff: Bool, nowMs: Int64) async -> Outcome {
+    /// 把意图原子写进 App Group，再吼一声让扩展立刻回来翻。
+    ///
+    /// 为什么要吼而不只等它自己那 60 秒的表：主 App 活着时按下去的指令（家长刚改完规则、
+    /// 孩子刚答对题）等一分钟才生效是能忍的，但「答对了还掐着」那一分钟孩子会当成闸门坏了。
+    /// 信号丢了也不致命 —— 表还在走。
+    ///
+    /// 为什么排期没变就整个跳过：心跳每 30 秒走一次这一步，照原样写就是每天重写三万次同一份文件、
+    /// 往通知中心发两万个信号，而扩展那边的档位判据本来就是按时刻自己推进的。
+    /// 跳过写不等于跳过判定 —— 隧道起不起、对账补不补，都在 sync() 的后半段，不受这一格影响。
+    private func handoff(_ intent: VpnIntent, nowMs: Int64) {
+        if let onDisk = VpnIntentStore.read(), onDisk.samePlan(as: intent) { return }
+        if let failure = VpnIntentStore.write(intent) {
+            // 写失败只记一行，不改判定、不重试风暴：扩展那边读不到新意图就按它手上的旧排期走，
+            // 而这一行是这件事唯一能被远程看到的痕迹。
+            let text = "意图没交出去：写入失败 " + failure
+            DiagLog.record("vpn", text, level: .error, nowMs: nowMs)
+            return
+        }
+        let want = intent.route(atLocal: intent.writtenAtLocalMs).label
+        let gate = intent.armed ? "隧道常驻" : "闸门没开"
+        let head = "意图已交 seq=" + String(intent.seq) + " " + gate + " 这一档=" + want
+        let why = "，判定=" + intent.reason
+        DiagLog.record("vpn", head + why, nowMs: nowMs)
+        DarwinSignal.post(name: VpnIntent.signalName)
+    }
+
+    // MARK: - 起停隧道
+
+    private func perform(wantsUp: Bool, nowMs: Int64) async -> Outcome {
         let base = AppGroup.apiBase
         let allowed = VpnPlan.allowedIPv4(fromBase: base)
         let hostNote = VpnPlan.allowedNote(fromBase: base)
-        if wantsCutoff, allowed == nil {
+        if wantsUp, allowed == nil {
             // 这条路在这里就断掉，是设计而不是兜底：放行那一格填不出来还起隧道，
-            // 等于把取题/判分两跳一起掐了，孩子面对的是"答对也提交不了"的死局。
-            let text = "掐网没开：" + hostNote + "，放行那一格填不出来"
-            DiagLog.record("vpn", text + "，宁可不断网", level: .error, nowMs: nowMs)
-            return Outcome(applied: false, text: "VPN 没开：认不出可放行的后端 IP")
+            // 等于把扩展日后换到掐网档时的取题/判分两跳一起掐了 —— 那时不在场的正是我们自己。
+            let text = "隧道没起：" + hostNote + "，放行那一格填不出来"
+            DiagLog.record("vpn", text + "，宁可不起隧道", level: .error, nowMs: nowMs)
+            return Outcome(applied: false, text: "VPN 没起：认不出可放行的后端 IP")
         }
 
         let managers = await Self.loadAll()
@@ -118,8 +154,8 @@ final class VpnCutoff {
         let head = "系统里已有 " + count + " 份 tunnel 配置，我们那枚" + foundText + "（" + hostNote + "）"
         DiagLog.record("vpn", head, nowMs: nowMs)
 
-        // 要停而根本没有那枚配置：这就是"没掐着"，不用报错，直接认账。
-        if !wantsCutoff, found == nil {
+        // 要停而根本没有那枚配置：这就是"隧道没在跑"，不用报错，直接认账。
+        if !wantsUp, found == nil {
             return Outcome(applied: true, text: "VPN 没在跑（本机还没建过那枚配置）")
         }
 
@@ -143,7 +179,7 @@ final class VpnCutoff {
             return Outcome(applied: false, text: "VPN 配置存了但拿不到连接对象")
         }
 
-        if wantsCutoff {
+        if wantsUp {
             let startError = Self.start(session)
             if let startError {
                 let domain = startError.domain
@@ -208,14 +244,14 @@ final class VpnCutoff {
         onChange?(text)
     }
 
-    /// 系统那一边和想要的这一档对不上账时补发一次。心跳每 30 秒经 poll() 走一遍。
+    /// 系统那一边和想要的那一档对不上账时补发一次。心跳每 30 秒经 poll() 走一遍。
     ///
-    /// 为什么必须由这里补而不能靠 apply()：那道幂等闸比的是"我上次下过什么指令"，
-    /// 而孩子手动关掉 VPN 之后指令并没有失效，失效的是执行结果。这时 desired 与
-    /// lastApplied 相等 ⇒ apply() 安静短路，于是"该断网"能一路保持到设备重启。
+    /// 为什么必须由这里补而不能靠 sync()：那道幂等闸比的是"我上次下过什么指令"，
+    /// 而孩子手动关掉 VPN 之后指令并没有失效，失效的是执行结果。这时 desiredUp 与
+    /// lastUpApplied 相等 ⇒ sync() 安静短路，于是"隧道该常驻"能一路保持到设备重启。
     /// 上一版真机日志里的 `状态变化 已连接 → 断开` 就是这么一条只记录、不处理的行。
     private func reconcile(status: String, nowMs: Int64) async {
-        guard let want = desired else { return }
+        guard let want = desiredUp else { return }
         // 正在起 / 正在停 / 重手中 / 无效都算"上一条还在落地"，不是对不上账。
         let stable = status == "已连接" || status == "断开" || status == "无配置"
         guard stable else { return }
@@ -239,9 +275,9 @@ final class VpnCutoff {
             onChange?(last)
         }
         inFlight = true
-        let outcome = await perform(wantsCutoff: want, nowMs: nowMs)
+        let outcome = await perform(wantsUp: want, nowMs: nowMs)
         inFlight = false
-        if outcome.applied { lastApplied = want }
+        if outcome.applied { lastUpApplied = want }
     }
 
     // MARK: - 系统调用
@@ -268,6 +304,8 @@ final class VpnCutoff {
         proto.providerConfiguration = marker
         manager.protocolConfiguration = proto
         manager.localizedDescription = "QuizGate 答题闸门"
+        // 这一格是常驻那一条的落点：isEnabled=false 的配置系统不会替你保持连接，
+        // 设备重启之后也不会自己回来 —— 而重启正是「隧道没了、主 App 还没被打开」那个窗口。
         manager.isEnabled = true
     }
 
@@ -333,7 +371,7 @@ final class VpnCutoff {
         return "无效"
     }
 
-    private func describe(_ wantsCutoff: Bool) -> String {
-        wantsCutoff ? "掐网" : "放行"
+    private func describe(_ wantsUp: Bool) -> String {
+        wantsUp ? "隧道常驻" : "隧道停掉"
     }
 }

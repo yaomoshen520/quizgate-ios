@@ -35,6 +35,11 @@ final class AppModel: ObservableObject {
     /// VPN 掐网通道的最新一句话，直接由 VpnCutoff 喂。首页那一行和 tag=vpn 日志同源。
     @Published var vpnNote = "VPN 通道还没试过"
 
+    /// 交给隧道的那一档，和上面那一行分两格：上面那行说的是「系统在不在吸包」这条通道
+    /// 起没起起来，这一格说的是「判定要哪一档」。分开是必需的 —— 常连之后这两件事
+    /// 第一次会不一致（隧道已连接、这一档还是放行），合在一行就成了「VPN 图标亮了却没拦」。
+    @Published var vpnRouteNote = "这一档还没算过"
+
     /// 自测用 .individual（不需要 Family Sharing 折腾），上线用 .child。
     /// 做成开关是因为 .child 的系统弹窗要家长在同一家庭组里点，调试时很难反复触发。
     @Published var useChildAuthorization = true
@@ -654,25 +659,49 @@ final class AppModel: ObservableObject {
         syncVpnCutoff()
     }
 
-    /// 把「闸门此刻想不想拦」翻译成 VPN 的起与停。
+    /// 把「闸门此刻想不想拦」连同「什么时候该换成想拦」一起交给隧道扩展。
     ///
     /// 判据是 decision.wantsShield，不是 state.shieldApplied：后者记的是 ManagedSettings
     /// 那一格写没写进去，属旧通道。走 VPN 这条路之后真把孩子拦住的是断网，
     /// 所以这道翻译必须挂在判定上；挂在旧通道的执行结果上，等于把新通道绑死在旧通道的天花板上。
     ///
-    /// 也不在 cannotEnforce 那一档掐网：它的含义是「我们连该不该拦都还不知道」，
-    /// 在一台规则都没落地的新装设备上先把网掐了，是把诊断期过成事故。
+    /// 但交出去的不止当前这一档，还有本轮的到点时刻：判定只在主 App 活着的时候算得出来，
+    /// 而阈值到的那一刻我们多半已经不在场。`VpnIntentPlan.build` 把这两样一起翻成排期，
+    /// 扩展进程拿着自己的钟就能把这一档推进到底。
+    ///
+    /// cannotEnforce 那一档仍然不建隧道：它的含义是「我们连该不该拦都还不知道」，
+    /// 在一台规则都没落地的新装设备上先把一条 VPN 挂起来，是把诊断期过成事故。
     private func syncVpnCutoff() {
-        cutoff.apply(wantsCutoff: decision.wantsShield, nowMs: state.nowMs())
+        let serverNow = state.nowMs()
+        let localNow = Int64(Date().timeIntervalSince1970 * 1000)
+        let intent = VpnIntentPlan.build(state: state, decision: decision, seq: VpnIntentStore.nextSeq(),
+                                         nowMs: serverNow, localNowMs: localNow)
+        cutoff.sync(intent: intent, nowMs: serverNow)
+        // 一格一格先算成独立的 let，最后才拼句子：三元表达式里直接写多段 `+` 拼接，
+        // 上一版 CI 报的是 "the compiler is unable to type-check this expression in reasonable time"，
+        // 而那句话会把整个 target 编挂，指不到是哪一行。
+        let want = intent.route(atLocal: localNow).label
+        let left = String((intent.cutoffAtLocalMs - localNow) / 60_000)
+        let armedNote = "这一档：" + want + "（到点还有 " + left + " 分钟）"
+        let offNote = "这一档：闸门没开，隧道不常驻"
+        vpnRouteNote = intent.armed ? armedNote : offNote
     }
 
     /// 手动试一次掐网/放行（调试，查完整段删）。
     ///
-    /// 为什么要有这两颗按钮：本轮要问系统的是「我们自己的这枚 tunnel provider 扩展
-    /// 到底载不载得起来」，而正常路径要等阈值攒满才第一次起隧道。真机上把这一等
-    /// 压成一次点击，读数当天就能拿到。
+    /// 为什么要有这两颗按钮：本轮要问系统的是「放行档那份一个包都不吸的设置，系统认不认」，
+    /// 而正常路径要等阈值攒满才第一次看到掐网档。真机上把这一等压成一次点击，读数当天就能拿到。
+    ///
+    /// 走 forceSync：上一轮起隧道失败之后那本幂等账会留在旧值上，不绕开的话这颗按钮什么都不做。
     func debugVpnCutoff(_ wantsCutoff: Bool) {
-        cutoff.forceApply(wantsCutoff: wantsCutoff, nowMs: state.nowMs())
+        let serverNow = state.nowMs()
+        let localNow = Int64(Date().timeIntervalSince1970 * 1000)
+        let intent = VpnIntentPlan.debug(cutoff: wantsCutoff, seq: VpnIntentStore.nextSeq(),
+                                         nowMs: serverNow, localNowMs: localNow)
+        cutoff.forceSync(intent: intent, nowMs: serverNow)
+        let debugWant = intent.route(atLocal: localNow).label
+        let debugNote = "调试档：" + debugWant + "（下一次心跳会按真排期改写）"
+        vpnRouteNote = debugNote
     }
 
     // MARK: - 落盾诊断（侧载执行层取证，调试用，查完整段删）

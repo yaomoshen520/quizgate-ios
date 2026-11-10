@@ -201,6 +201,12 @@ struct HomeView: View {
                 .font(.system(size: Theme.Text.caption))
                 .foregroundStyle(Theme.Palette.inkFaint)
                 .fixedSize(horizontal: false, vertical: true)
+            // 通道状态和判定档位从这一版起是两件事：隧道只要闸门开着就一直连着，
+            // 到点只是换一次路由。少这一行，"VPN 图标亮了"就会被当成"已经在拦了"。
+            Text(model.vpnRouteNote)
+                .font(.system(size: Theme.Text.caption))
+                .foregroundStyle(Theme.Palette.inkFaint)
+                .fixedSize(horizontal: false, vertical: true)
         }
         .card()
     }
