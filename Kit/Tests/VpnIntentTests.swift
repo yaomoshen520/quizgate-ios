@@ -29,9 +29,10 @@ final class VpnIntentTests: XCTestCase {
         super.tearDown()
     }
 
-    /// 手搓一份意图，让每一档都能单独挪动。
+    /// 手搓一份意图，让每一档都能单独挪动。`end` 默认 `Int64.max` = 这份排期永不过期，
+    /// 于是大多数用例只能在「到没到点」这一格上做断言，不会被过期那一档混掉。
     private func intent(armed: Bool = true, cutoffAt: Int64, unlock: Int64? = nil,
-                        end: Int64 = .distantFuture, seq: Int = 0) -> VpnIntent {
+                        end: Int64 = Int64.max, seq: Int = 0) -> VpnIntent {
         VpnIntent(armed: armed, cutoffAtLocalMs: cutoffAt, unlockUntilLocalMs: unlock,
                   notAfterLocalMs: end, reason: "test", seq: seq, writtenAtLocalMs: local)
     }
