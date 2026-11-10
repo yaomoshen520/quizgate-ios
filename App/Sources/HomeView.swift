@@ -166,6 +166,12 @@ struct HomeView: View {
                 .buttonStyle(.bordered)
                 .controlSize(.large)
             }
+            Button { model.debugProbeVpn() } label: {
+                Text("试存 VPN 配置（探测侧载认不认 VPN 权限）")
+                    .frame(maxWidth: .infinity, minHeight: Theme.Metric.controlHeight)
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.large)
         }
         .card()
     }

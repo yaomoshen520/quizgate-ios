@@ -1,6 +1,7 @@
 import Combine
 import FamilyControls
 import Foundation
+import NetworkExtension
 import QuizGateKit
 import SwiftUI
 import UIKit
@@ -601,6 +602,34 @@ final class AppModel: ObservableObject {
         persist()
         DiagLog.record("shield", "主App清盾", level: .warn)
         Task { await flushLogs() }
+    }
+
+    /// VPN 可行性探测（调试，查完整段删）。侧载包里注入的 Personal VPN entitlement
+    /// 系统认不认，唯一判据就是 saveToPreferences 成不成：
+    /// 成 ⟹ 侧载也能走 VPN 掐网，继续做原型；败 ⟹ VPN 和 Screen Time 一样必须付费账号 + 描述文件。
+    /// isEnabled=false 只测「能不能落进系统 VPN 库」，不真发起连接；IKEv2 参数是假的无所谓，
+    /// 域/码会告诉我们失败到底是「没 entitlement」还是「配置不合法」——两者要分开读。
+    func debugProbeVpn() {
+        let manager = NEVPNManager.shared()
+        let proto = NEVPNProtocolIKEv2()
+        proto.serverIdentifier = "quizgate-probe"
+        proto.serverURL = URL(string: "http://101.35.194.117")
+        proto.localIdentifier = "quizgate"
+        manager.protocol = proto
+        manager.isEnabled = false
+        manager.saveToPreferences { err in
+            if let e = err as NSError? {
+                DiagLog.record("vpn",
+                               "存 VPN 配置失败 domain=" + e.domain
+                                   + " code=" + String(e.code)
+                                   + " desc=" + e.localizedDescription,
+                               level: .error)
+            } else {
+                DiagLog.record("vpn", "存 VPN 配置成功：系统认这枚 Personal VPN entitlement",
+                               level: .info)
+            }
+            Task { @MainActor in await self.flushLogs() }
+        }
     }
 
     private func label(_ reason: CannotEnforceReason) -> String {
