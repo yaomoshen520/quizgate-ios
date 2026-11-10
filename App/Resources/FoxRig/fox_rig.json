@@ -1,0 +1,136 @@
+{
+  "size": 512,
+  "layers": [
+    {
+      "name": "layer-tail",
+      "file": "fox_tail",
+      "slot": null,
+      "pivot": [
+        318,
+        398
+      ]
+    },
+    {
+      "name": "layer-body",
+      "file": "fox_body",
+      "slot": null,
+      "pivot": [
+        256,
+        300
+      ]
+    },
+    {
+      "name": "layer-hind",
+      "file": "fox_hind",
+      "slot": null,
+      "pivot": [
+        256,
+        452
+      ]
+    },
+    {
+      "name": "layer-clock",
+      "file": "fox_clock",
+      "slot": null,
+      "pivot": [
+        256,
+        372
+      ]
+    },
+    {
+      "name": "layer-arm-left",
+      "file": "fox_arm_left",
+      "slot": null,
+      "pivot": [
+        196,
+        300
+      ]
+    },
+    {
+      "name": "layer-arm-right",
+      "file": "fox_arm_right",
+      "slot": null,
+      "pivot": [
+        316,
+        300
+      ]
+    },
+    {
+      "name": "layer-ears",
+      "file": "fox_ears",
+      "slot": null,
+      "pivot": [
+        256,
+        150
+      ]
+    },
+    {
+      "name": "layer-head",
+      "file": "fox_head",
+      "slot": null,
+      "pivot": [
+        256,
+        252
+      ]
+    },
+    {
+      "name": "layer-face",
+      "file": "fox_face_idle",
+      "slot": "face",
+      "pivot": null
+    },
+    {
+      "name": "layer-scarf",
+      "file": "fox_scarf_amber",
+      "slot": "scarf",
+      "pivot": [
+        256,
+        272
+      ]
+    }
+  ],
+  "scarves": [
+    {
+      "id": "FOX_AMBER",
+      "file": "fox_scarf_amber"
+    },
+    {
+      "id": "FOX_SAGE",
+      "file": "fox_scarf_sage"
+    },
+    {
+      "id": "FOX_SLATE",
+      "file": "fox_scarf_slate"
+    },
+    {
+      "id": "FOX_MAUVE",
+      "file": "fox_scarf_mauve"
+    },
+    {
+      "id": "FOX_SAND",
+      "file": "fox_scarf_sand"
+    },
+    {
+      "id": "FOX_TEAL",
+      "file": "fox_scarf_teal"
+    },
+    {
+      "id": "FOX_ROSE",
+      "file": "fox_scarf_rose"
+    }
+  ],
+  "faces": [
+    {
+      "name": "idle",
+      "file": "fox_face_idle"
+    },
+    {
+      "name": "happy",
+      "file": "fox_face_happy"
+    },
+    {
+      "name": "think",
+      "file": "fox_face_think"
+    }
+  ]
+}

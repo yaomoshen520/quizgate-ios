@@ -11,14 +11,20 @@ public struct RuleState: Codable, Equatable, Sendable {
     public var graceMinutes: Int
     public var enabled: Bool
     public var version: Int64
+    /// 「快到了」的门槛秒数，来自 GameModeRule.warning_seconds。
+    /// 用服务端这个数而不是本地另编一个：家长在后台调了这一格，两端要一起变，
+    /// 否则同一份规则在两台机上提醒的时机不同。nil/0 = 这一档不提醒。
+    /// 可选是为了让老 payload 缺键也能解出来（见 SharedState 那条 schemaVersion 注释）。
+    public var warningSeconds: Int?
 
     public init(thresholdMinutes: Int, dailyLimitMinutes: Int, graceMinutes: Int,
-                enabled: Bool, version: Int64) {
+                enabled: Bool, version: Int64, warningSeconds: Int? = nil) {
         self.thresholdMinutes = thresholdMinutes
         self.dailyLimitMinutes = dailyLimitMinutes
         self.graceMinutes = graceMinutes
         self.enabled = enabled
         self.version = version
+        self.warningSeconds = warningSeconds
     }
 }
 
@@ -106,6 +112,12 @@ public struct SharedState: Codable, Equatable, Sendable {
     /// 而且判断依据是时间而不是系统的活动列表——列表读不准时，
     /// 拿它当重配依据会把「重开 App」变成「重新计时」，那是给孩子开的门。
     public var monitoringStartedAtMs: Int64?
+    /// 家长给孩子挑的形象（proto AvatarId 的编号）。**nil 和 0 都不画狐狸**：
+    /// 0 是 AVATAR_UNSPECIFIED，proto 那段注释写的是「0 不是"没有形象"而是"没选过"」，
+    /// 各端在这种情况下必须退回昵称首字头像，不能默认弹一只。
+    /// 走心跳而不是 RuleSnapshot：规则那一份带 version，换条围巾就抬版本号的话，
+    /// 「改形象不影响规则」这条在代码里就不成立了。
+    public var avatarId: Int?
 
     public init(installId: String = UUID().uuidString) {
         self.schemaVersion = Self.currentSchemaVersion
@@ -126,6 +138,7 @@ public struct SharedState: Codable, Equatable, Sendable {
         self.monitoringActivity = nil
         self.dailyLimitReachedOnDay = nil
         self.monitoringStartedAtMs = nil
+        self.avatarId = nil
     }
 
     public func nowMs() -> Int64 {

@@ -91,6 +91,18 @@ message AppInventoryRequest {
 }
 message AppInventoryReply { int64 synced_at_ms = 1; }
 message ListAppsRequest { string child_id = 1; }
+// 孩子此刻在干什么。家长端的动画认这个编号，不认下面那句中文文案——
+// 文案是给人读的，改一个字不该把后台的动作悄悄弄没（那正是"界面一个样、手机另一个样"）。
+// 0 表示这台设备还没上报过编号：老客户端只会发文案，端上要退回按文案显示、不播动画。
+enum PlayState {
+  PLAY_STATE_UNSPECIFIED = 0;
+  QUIZ = 1;
+  PENDING_PARENT = 2;
+  WARNING = 3;
+  PLAYING = 4;
+  PAUSED = 5;
+  IDLE = 6;
+}
 message DeviceApps {
   string device_id = 1;
   string device_model = 2;
@@ -103,6 +115,7 @@ message DeviceApps {
   int64 applied_rule_version = 9;
   int32 extensions_used = 10;
   string game_state = 11;
+  PlayState play_state = 12;
 }
 message ListAppsReply { repeated DeviceApps devices = 1; }
 message ClassifyAppRequest {
@@ -182,6 +195,7 @@ message HeartbeatRequest {
   int32 extensions_used = 6;
   string game_state = 7;
   string game_cycle_id = 8;
+  PlayState play_state = 9;
 }
 
 message HeartbeatReply {
@@ -192,6 +206,10 @@ message HeartbeatReply {
   // 家长认领之后没人再通知它，手机就会一辈子把"去后台输入这六个字符"摆在首页上。
   // 心跳是唯一稳定的往返通道，所以这个事实从这里回。
   bool device_bound = 4;
+  // 形象也走心跳，不走 RuleSnapshot：规则那一份是带 version 的，
+  // 换一只围巾就要抬版本号的话，"改形象不影响规则"这条就没法在代码里成立了。
+  // 设备拿它和自己存的那份比，不一样才换图，所以每次心跳都带、重复带不出重绘。
+  AvatarId avatar_id = 5;
 }
 
 // ── 拆闸门事件（孩子动手的证据）──────────────────────────
@@ -310,6 +328,16 @@ message ChildSummary {
   // 服务端反推的失联：超过 offline_after_ms 没心跳。注意这是推断不是实证，
   // 界面文案必须给全"卸载、关机或断网"三种可能，不能写"已卸载"。
   bool offline = 9;
+  // 家长给这个孩子选的形象。0 不是"没有形象"而是"没选过"，
+  // 各端在这种情况必须退回现有的昵称首字头像，不能显示空白或默认弹一只。
+  AvatarId avatar_id = 10;
+  // 孩子此刻在干嘛，口径和 DeviceApps.play_state 完全一致：只在编号认得的时候才填，
+  // 库里躺着 0（老客户端从不报编号）或脏值时留 UNSPECIFIED，前端按"这只狐狸没有动作"处理。
+  // 家长看的多半是概览那一屏，不会为了看动作专门点进"游戏与应用"，所以这一列必须跟着摘要走。
+  PlayState play_state = 11;
+  // play_state 是什么时候报上来的。前端"超过 3 分钟没再上报就停住不动"要靠它算，
+  // 不能拿 last_heartbeat_ms 顶替——心跳活着不代表状态是新的。
+  int64 observed_at_ms = 12;
 }
 
 message LoginReply {
@@ -487,6 +515,18 @@ message ListBankReply {
   repeated BankQuestion questions = 1;
 }
 
+// ── 平台通用题库（家长没录题时闸门的兜底题源）──────────────
+//
+// 只读：内置题不属于任何家长，所以既不能核对、也不能改删，这一条只给浏览。
+// 刻意不带过滤字段：整份就两百来道，一次全给，年级/学科筛选和搜索都在家长端本地做，
+// 省掉一轮往返，也让"覆盖到几年级"这种统计不依赖服务端再开一个计数接口。
+message ListBuiltinBankRequest {
+}
+
+message ListBuiltinBankReply {
+  repeated BankQuestion questions = 1;
+}
+
 // ── 拍照识题（家长拍一张卷子，识别引擎出草稿）──────────────
 //
 // 三条边界写在这里，代码别绕过：
@@ -621,9 +661,25 @@ message ChangePasswordReply {
   string parent_token = 1;
 }
 
+// 孩子的虚拟形象。这里只存"选了哪一只"：图片资源打包在各端本地，
+// 服务端既不下发二进制也不下发 URL——多一个 URL 就多一个可被替换的下载面。
+// 七档是同一只狐狸、只有围巾变色，所以新增一档的代价是一张小图，不是一套新美术。
+enum AvatarId {
+  AVATAR_UNSPECIFIED = 0;
+  FOX_AMBER = 1;
+  FOX_SAGE = 2;
+  FOX_SLATE = 3;
+  FOX_MAUVE = 4;
+  FOX_SAND = 5;
+  FOX_TEAL = 6;
+  FOX_ROSE = 7;
+}
+
 message CreateChildRequest {
   string display_name = 1;
   int32 grade = 2;
+  // 不传即 AVATAR_UNSPECIFIED，服务端落默认形象，老前端不用改也能建档案。
+  AvatarId avatar_id = 3;
 }
 
 message CreateChildReply {
@@ -636,6 +692,10 @@ message UpdateChildRequest {
   string child_id = 1;
   string display_name = 2;
   int32 grade = 3;
+  // 这里 0 的含义和建档案那条不一样，是"这次不动形象"：proto3 的枚举分不出"没填"和"填了 0"，
+  // 而改昵称的那次请求里形象字段天生就是 0——把它当成"清空"会在家长只改名字时静默换掉形象。
+  // 想换回默认就显式传 FOX_AMBER，形象这一列永远有值，没有"无形象"这个状态。
+  AvatarId avatar_id = 4;
 }
 
 message UpdateChildReply {
@@ -690,4 +750,80 @@ message ResetPasswordRequest {
 
 message ResetPasswordReply {
   string message = 1;
+}
+
+// ── 意见反馈（家长提，管理员看）──────────────────────────
+//
+// 三条边界写在这里，代码别绕过：
+// 一是这一张表只有后台读得到，孩子端的任何接口都不下发它的内容；
+// 二是正文按纯文本入库，不收图——全项目只有 scan-bank 收 bytes，不新开第二个口子；
+// 三是「已处理」是管理员单方面的记账，协议里没有回复内容这一项，家长那边只看状态。
+
+// 反馈类别。固定三档而不是自由标签：管理员要按类筛，家长要能一眼选完。
+// 0 号留给「没选」，所以服务端把 UNSPECIFIED 当错误拒掉，不收一条没归类的意见。
+enum FeedbackKind {
+  FEEDBACK_KIND_UNSPECIFIED = 0;
+  IMPROVEMENT = 1;
+  ISSUE = 2;
+  OTHER = 3;
+}
+
+message FeedbackItem {
+  string feedback_id = 1;
+  FeedbackKind kind = 2;
+  string content = 3;
+  int64 created_at_ms = 4;
+  // 状态在服务端由 handled_at_ms 推出来，库里没有第二个布尔列，所以这两列永远一致。
+  bool handled = 5;
+  // 0 表示还没人处理过。
+  int64 handled_at_ms = 6;
+  // 只有管理员侧填。家长读自己那一份时恒为空串：那是他自己的账号，
+  // 回给他没有信息量，还会把内部编号漏到界面上。
+  string submitter_username = 7;
+  string submitter_display_name = 8;
+}
+
+message SubmitFeedbackRequest {
+  FeedbackKind kind = 1;
+  string content = 2;
+}
+
+message SubmitFeedbackReply {
+  string feedback_id = 1;
+  // 一句给人看的话，界面直接念，和登录那一路同一个规矩：文案不在前端另编一套。
+  string message = 2;
+}
+
+message ListMyFeedbackRequest {
+}
+
+// content_max_length 随应答给出去：界面上的字数上限必须和服务端那道闸是同一个数，
+// 抄一份在客户端就会漂移。理由和 ListAlertsReply 里那个 offline_after_ms 完全一样。
+message ListMyFeedbackReply {
+  repeated FeedbackItem items = 1;
+  int32 content_max_length = 2;
+}
+
+message ListFeedbackRequest {
+  // 0=全部，1=只看未处理。用 int 而不是 bool，是为了以后要「只看已处理」时不用改字段号。
+  int32 state_filter = 1;
+}
+
+// 两个计数由服务端算：筛成「只看未处理」时，光数眼前这几行数不出总共还剩多少条。
+message ListFeedbackReply {
+  repeated FeedbackItem items = 1;
+  int32 pending_count = 2;
+  int32 total_count = 3;
+}
+
+message MarkFeedbackRequest {
+  string feedback_id = 1;
+  // true=标记已处理，false=取消标记。留反向那条是因为误按一次不该永久卡住。
+  bool handled = 2;
+}
+
+message MarkFeedbackReply {
+  string feedback_id = 1;
+  bool handled = 2;
+  string message = 3;
 }

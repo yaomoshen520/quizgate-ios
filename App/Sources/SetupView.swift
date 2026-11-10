@@ -17,12 +17,12 @@ struct SetupView: View {
         ZStack {
             Theme.pageGradient.ignoresSafeArea()
             ScrollView {
-                VStack(alignment: .leading, spacing: Theme.Space.s6) {
+                VStack(alignment: .leading, spacing: Theme.Space.s4) {
                     header
                     // 四步是有序的，宽屏上两列也仍然从左到右、从上到下读得通；
                     // 单列在 iPad 上会把每一步都拉成一条横幅，家长反而看不清哪一步还没做。
                     LazyVGrid(columns: cardGridColumns(wide: wide), alignment: .leading,
-                              spacing: Theme.Space.s6) {
+                              spacing: Theme.Space.s4) {
                         authorizationCard
                         selectionCard
                         promptCard
@@ -32,7 +32,7 @@ struct SetupView: View {
                         BannerView(text: banner, tone: .warn)
                     }
                 }
-                .padding(Theme.Space.s5)
+                .padding(Theme.Space.s4)
                 .readableColumn()
             }
         }
@@ -139,7 +139,7 @@ struct SetupView: View {
                     .foregroundStyle(Theme.Palette.brand600)
                     .frame(maxWidth: .infinity, minHeight: Theme.Metric.controlHeightLarge)
                     .background(Theme.Palette.brand100)
-                    .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.sm))
+                    .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.control))
                 Text("家长登录后台，在「孩子设置」里输入这六个字符。")
                     .font(.system(size: Theme.Text.label))
                     .foregroundStyle(Theme.Palette.inkSoft)
@@ -167,11 +167,11 @@ struct StepTitle: View {
             Text(done ? "✓" : "\(index)")
                 .font(.system(size: Theme.Text.label, weight: .bold))
                 .foregroundStyle(done ? Theme.Palette.ok : Theme.Palette.inkOnBrand)
-                .frame(width: 26, height: 26)
+                .frame(width: Theme.Metric.stepBadge, height: Theme.Metric.stepBadge)
                 .background(done ? Theme.Palette.okBg : Theme.Palette.brand500)
                 .clipShape(Circle())
             Text(text)
-                .font(.system(size: Theme.Text.control, weight: .semibold))
+                .font(.system(size: Theme.Text.control, weight: .bold))
                 .foregroundStyle(Theme.Palette.ink)
             Spacer()
         }
@@ -183,14 +183,22 @@ struct PrimaryButtonStyle: ButtonStyle {
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(.system(size: Theme.Text.control, weight: .semibold))
+            // Android `Button.Primary` 是 17sp + `textStyle=bold`，不是 semibold。
+            .font(.system(size: Theme.Text.control, weight: .bold))
             .foregroundStyle(Theme.Palette.inkOnBrand)
             .background(
-                RoundedRectangle(cornerRadius: Theme.Radius.sm)
-                    .fill(disabled ? Theme.Palette.brand300
-                          : (configuration.isPressed ? Theme.Palette.brand700 : Theme.Palette.brand500))
+                RoundedRectangle(cornerRadius: Theme.Radius.control)
+                    .fill(fill(pressed: configuration.isPressed))
             )
             .contentShape(Rectangle())
+    }
+
+    /// 常态是 brand_500 → brand_600 的纵向渐变（`bg_primary_button.xml` 里 angle=270 那一档），
+    /// 按下换成 brand_600 纯色。禁用那档 Android 没有对应物，iOS 这边用 brand_300。
+    private func fill(pressed: Bool) -> AnyShapeStyle {
+        if disabled { return AnyShapeStyle(Theme.Palette.brand300) }
+        if pressed { return AnyShapeStyle(Theme.Palette.brand600) }
+        return AnyShapeStyle(Theme.primaryButton)
     }
 }
 
@@ -206,7 +214,7 @@ struct BannerView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(Theme.Space.s4)
             .background(background)
-            .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.sm))
+            .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.control))
     }
 
     private var foreground: Color {

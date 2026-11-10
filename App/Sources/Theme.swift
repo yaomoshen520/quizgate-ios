@@ -41,6 +41,9 @@ enum Theme {
         static let noteBg = Color(hex: 0xFFF6E5)
         static let noteStroke = Color(hex: 0xF2D9A6)
         static let noteInk = Color(hex: 0x7A5230)
+        /// 答对那一屏的渐变底色：白到一点点绿。原来写在 QuizView 的字面量里，
+        /// 和 ok/okBg 分家之后，改成功色要改两个文件。
+        static let successWash = Color(hex: 0xF2F9F4)
     }
 
     enum Space {
@@ -55,9 +58,13 @@ enum Theme {
     }
 
     enum Radius {
-        static let sm: CGFloat = 12
-        static let md: CGFloat = 18
-        static let lg: CGFloat = 26
+        /// 卡片的圆角。Android `bg_card.xml` 里写死的是 26dp、`bg_hero_card.xml` 用 radius_lg，
+        /// 两者同值，所以这一档就是卡片档。
+        static let card: CGFloat = 26
+        /// 按钮、输入框、选项行。Android 那三个 drawable 都是 18dp（radius_md）。
+        static let control: CGFloat = 18
+        /// 「再想一步」那块解析底。Android `bg_note.xml` 是 16dp，比控件小一档、比胶囊大得多。
+        static let note: CGFloat = 16
         static let pill: CGFloat = 100
     }
 
@@ -70,6 +77,11 @@ enum Theme {
         static let stem: CGFloat = 26
         static let option: CGFloat = 18
         static let hero: CGFloat = 34
+        /// 关闭答题页那颗叉的图标字号：它是个按钮的图标，不是正文，
+        /// 但"图标多大"散在视图里就会有三处不一样的 22。
+        static let icon: CGFloat = 22
+        /// 答对那一屏的印章。
+        static let successIcon: CGFloat = 64
     }
 
     enum Metric {
@@ -78,6 +90,15 @@ enum Theme {
         static let controlHeightLarge: CGFloat = 56
         static let chipHeight: CGFloat = 30
         static let progressHeight: CGFloat = 12
+        /// 首页 hero 上那枚状态圆点。
+        static let toneDot: CGFloat = 12
+        /// 设置页步骤序号那枚圆章。
+        static let stepBadge: CGFloat = 26
+        /// 首页 hero 上那只狐狸的边长。和 Android activity_main.xml 的 44dp 同一个数：
+        /// 两端首页第一段的第一眼必须是同一只狐狸、同一个大小。
+        static let avatarHero: CGFloat = 44
+        /// 答题页那只：比 hero 小一圈，它是陪跑的，不是主角。
+        static let avatarQuiz: CGFloat = 40
     }
 
     enum Layout {
@@ -87,10 +108,29 @@ enum Theme {
         static let maxContentWidth: CGFloat = 680
         /// 卡片网格在宽屏上的最小列宽。低于这个数就说明屏不够宽，退回单列。
         static let minColumnWidth: CGFloat = 320
+        /// 答题页顶部那枚知识点标签的截断宽度：宽屏给得多一点，窄屏必须让位给关闭按钮。
+        static let chipMaxWide: CGFloat = 260
+        static let chipMaxNarrow: CGFloat = 140
+        /// 答对那一屏的内容列宽：一句「答对了」铺满 iPad 会变成一张横幅。
+        static let successColumnWidth: CGFloat = 520
     }
 
     static let pageGradient = LinearGradient(
         colors: [Palette.pageTop, Palette.pageBottom],
+        startPoint: .top, endPoint: .bottom
+    )
+
+    /// 首页第一段那张卡的底：Android `bg_hero_card.xml` 是 brand_050 → card 的 315° 渐变，
+    /// 换算到 SwiftUI 的坐标就是左上到右下。hero 之外一律纯白，不然整屏都是淡蓝块。
+    static let heroWash = LinearGradient(
+        colors: [Palette.brand050, Palette.card],
+        startPoint: .topLeading, endPoint: .bottomTrailing
+    )
+
+    /// 主按钮：Android `bg_primary_button.xml` 常态是 brand_500 → brand_600 的 270°（上到下）渐变，
+    /// 按下换成 brand_600 纯色。
+    static let primaryButton = LinearGradient(
+        colors: [Palette.brand500, Palette.brand600],
         startPoint: .top, endPoint: .bottom
     )
 }
@@ -108,21 +148,39 @@ extension Color {
 }
 
 /// 卡片样式收在一处，三屏共用，避免各写一套圆角和描边。
+/// 内边距 24、圆角 26、描边 1pt：三个数都取自 Android `bg_card.xml` + 布局里的 `padding=space_6`。
 struct CardBackground: ViewModifier {
     func body(content: Content) -> some View {
         content
-            .padding(Theme.Space.s5)
+            .padding(Theme.Space.s6)
             .background(Theme.Palette.card)
-            .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.md))
+            .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.card))
             .overlay(
-                RoundedRectangle(cornerRadius: Theme.Radius.md)
+                RoundedRectangle(cornerRadius: Theme.Radius.card)
                     .strokeBorder(Theme.Palette.cardStroke, lineWidth: 1)
+            )
+    }
+}
+
+/// 首页第一段专用：同一副尺寸，底色换成淡蓝渐变、描边换成 brand_200。
+/// 单独一个 modifier 而不是给 `card()` 加参数，是因为「哪一块是 hero」这件事
+/// 只该由首页那一处决定，传参的版本迟早会被第二屏拿去当普通卡用。
+struct HeroCardBackground: ViewModifier {
+    func body(content: Content) -> some View {
+        content
+            .padding(Theme.Space.s6)
+            .background(Theme.heroWash)
+            .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.card))
+            .overlay(
+                RoundedRectangle(cornerRadius: Theme.Radius.card)
+                    .strokeBorder(Theme.Palette.brand200, lineWidth: 1)
             )
     }
 }
 
 extension View {
     func card() -> some View { modifier(CardBackground()) }
+    func heroCard() -> some View { modifier(HeroCardBackground()) }
 }
 
 /// 宽屏限宽，窄屏铺满。
@@ -150,11 +208,13 @@ extension View {
 /// 卡片网格的列定义：宽屏两列、窄屏一列。
 /// 把 size class 由调用方传进来而不是在这里摸 environment，是因为三屏都要用同一份判据，
 /// 而「iPad 上现在是不是全宽」这件事一旦在两处各判一次，迟早有一处判错。
+/// 列间距与段间距同一个数（16）：Android 卡片之间是 `layout_marginTop=space_4`，
+/// 宽屏并两列时横向缝隙要是比纵向大，同一段落看起来就成了两块不相干的东西。
 func cardGridColumns(wide: Bool) -> [GridItem] {
     if wide {
         return [GridItem(.adaptive(minimum: Theme.Layout.minColumnWidth,
                                    maximum: Theme.Layout.maxContentWidth),
-                         spacing: Theme.Space.s5)]
+                         spacing: Theme.Space.s4)]
     }
-    return [GridItem(.flexible(), spacing: Theme.Space.s5)]
+    return [GridItem(.flexible(), spacing: Theme.Space.s4)]
 }

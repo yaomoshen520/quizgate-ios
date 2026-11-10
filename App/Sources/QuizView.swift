@@ -32,7 +32,13 @@ struct QuizView: View {
 
     private func content(_ question: Quizgate_Question) -> some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: Theme.Space.s5) {
+            VStack(alignment: .leading, spacing: Theme.Space.s4) {
+                // 答题这一屏也摆同一只：孩子被拦下来的那一刻能看见"是自家那只狐狸在出题"，
+                // 而不是一个陌生的系统弹窗。点它演一次走出去再回来，和 Android 那颗点击一样。
+                AvatarRigView(avatarId: model.state.avatarId ?? 0,
+                              playState: .quiz,
+                              size: Theme.Metric.avatarQuiz,
+                              playsOnTap: true)
                 HStack {
                     // 三枚标签在窄屏上会挤到「关闭」那颗按钮 off-screen，所以标签可截断、
                     // 按钮不可压缩：知识点名字长是常态，关闭入口消失了孩子就退不出这一屏。
@@ -42,21 +48,22 @@ struct QuizView: View {
                         .fixedSize(horizontal: true, vertical: false)
                     if !question.knowledgePoint.isEmpty {
                         Chip(text: question.knowledgePoint)
-                            .frame(maxWidth: wide ? 260 : 140, alignment: .leading)
+                            .frame(maxWidth: wide ? Theme.Layout.chipMaxWide : Theme.Layout.chipMaxNarrow,
+                                   alignment: .leading)
                     }
                     Spacer(minLength: Theme.Space.s2)
                     Button {
                         dismiss()
                     } label: {
                         Image(systemName: "xmark.circle.fill")
-                            .font(.system(size: 22))
+                            .font(.system(size: Theme.Text.icon))
                             .foregroundStyle(Theme.Palette.inkFaint)
                     }
                     .frame(width: Theme.Metric.controlHeight, height: Theme.Metric.controlHeight)
                 }
 
                 Text(question.stem)
-                    .font(.system(size: Theme.Text.stem, weight: .semibold))
+                    .font(.system(size: Theme.Text.stem, weight: .bold))
                     .foregroundStyle(Theme.Palette.ink)
                     .fixedSize(horizontal: false, vertical: true)
 
@@ -85,9 +92,9 @@ struct QuizView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(Theme.Space.s4)
                     .background(Theme.Palette.noteBg)
-                    .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.sm))
+                    .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.note))
                     .overlay(
-                        RoundedRectangle(cornerRadius: Theme.Radius.sm)
+                        RoundedRectangle(cornerRadius: Theme.Radius.note)
                             .strokeBorder(Theme.Palette.noteStroke, lineWidth: 1)
                     )
 
@@ -106,7 +113,7 @@ struct QuizView: View {
                     BannerView(text: banner, tone: .danger)
                 }
             }
-            .padding(Theme.Space.s5)
+            .padding(Theme.Space.s4)
             .readableColumn()
         }
     }
@@ -116,7 +123,7 @@ struct QuizView: View {
     private var successLayer: some View {
         VStack(spacing: Theme.Space.s6) {
             Image(systemName: "checkmark.seal.fill")
-                .font(.system(size: 64))
+                .font(.system(size: Theme.Text.successIcon))
                 .foregroundStyle(Theme.Palette.ok)
             Text("答对了")
                 .font(.system(size: Theme.Text.hero, weight: .heavy))
@@ -136,10 +143,10 @@ struct QuizView: View {
         .padding(Theme.Space.s8)
         // 里层限宽、外层铺满：不这么写的话 iPad 上「答对了」三个字会横贯整屏，
         // 而渐变背景必须留在外层，不然两侧会露出页面底色。
-        .frame(maxWidth: 520)
+        .frame(maxWidth: Theme.Layout.successColumnWidth)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(
-            LinearGradient(colors: [.white, Color(hex: 0xF2F9F4)],
+            LinearGradient(colors: [.white, Theme.Palette.successWash],
                            startPoint: .top, endPoint: .bottom)
                 .ignoresSafeArea()
         )
@@ -184,9 +191,9 @@ struct OptionButton: View {
                 .frame(maxWidth: .infinity, minHeight: Theme.Metric.controlHeight, alignment: .leading)
                 .padding(.horizontal, Theme.Space.s4)
                 .background(chosen ? Theme.Palette.optionPressed : Theme.Palette.card)
-                .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.sm))
+                .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.control))
                 .overlay(
-                    RoundedRectangle(cornerRadius: Theme.Radius.sm)
+                    RoundedRectangle(cornerRadius: Theme.Radius.control)
                         .strokeBorder(chosen ? Theme.Palette.brand300 : Theme.Palette.optionStroke,
                                       lineWidth: 1)
                 )

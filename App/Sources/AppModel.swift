@@ -40,6 +40,16 @@ final class AppModel: ObservableObject {
     /// 第一次会不一致（隧道已连接、这一档还是放行），合在一行就成了「VPN 图标亮了却没拦」。
     @Published var vpnRouteNote = "这一档还没算过"
 
+    /// 上报通道的最新一句话，首页页脚那一行。Android 那边是 `ReportState.describe()`，
+    /// 两端文案逐字相同（「连接正常，没有待发的事件」/「还没试过上报」）。
+    ///
+    /// iOS 这一格是从两个已知事实推出来的，不是照抄 Android 的落盘记号：
+    /// 队列里还压着几条 + 心跳成功过没有。**推不出「上次尝试失败了」**——
+    /// 那种情况 iOS 没有落盘的记号，所以宁可不说，也不编一个"没发出去"的理由。
+    @Published var channelNote = "还没试过上报"
+    /// 页脚那一行该不该换成注意色。判据是"队列里还压着东西"，不是去读那句人话的开头。
+    @Published var channelBacklogged = false
+
     /// 自测用 .individual（不需要 Family Sharing 折腾），上线用 .child。
     /// 做成开关是因为 .child 的系统弹窗要家长在同一家庭组里点，调试时很难反复触发。
     @Published var useChildAuthorization = true
@@ -148,6 +158,21 @@ final class AppModel: ObservableObject {
             expanded.categoryTokens = restored.categoryTokens
             expanded.webDomainTokens = restored.webDomainTokens
             selection = expanded
+        }
+        refreshChannelNote()
+    }
+
+    /// 重算页脚那一行。三处调用：读盘之后、往队列里塞一条之后、心跳补发之后。
+    /// 读的是 Outbox 那份 plist，所以刻意只在"队列可能变了"的时候读，不放进 body 里逐帧算。
+    private func refreshChannelNote() {
+        let pending = OutboxStore.load().count
+        channelBacklogged = pending > 0
+        if pending > 0 {
+            channelNote = "还有 \(pending) 条记录没发出去，联网后自动补"
+        } else if state.lastSyncAtMs != nil {
+            channelNote = "连接正常，没有待发的事件"
+        } else {
+            channelNote = "还没试过上报"
         }
     }
 
@@ -368,6 +393,7 @@ final class AppModel: ObservableObject {
             PendingReport(path: "gate-event", payload: payload, createdAtMs: state.nowMs()),
             to: defaults
         )
+        refreshChannelNote()
     }
 
     // MARK: - 心跳（兜底：不赌系统回调）
@@ -392,12 +418,18 @@ final class AppModel: ObservableObject {
         request.accumulatedMs = state.ledger.playedMs
         request.knownRuleVersion = state.rule?.version ?? 0
         request.appliedRuleVersion = state.rule?.version ?? 0
+        // 家长后台那只狐狸认的是编号，不是中文文案：不报 play_state 的设备在后台永远静止。
+        // 文案照旧一起报，为的是后台那张表的老列不至于因为 iOS 上线而空掉。
+        let playState = currentPlayState()
+        request.playState = playState.proto
+        request.gameState = playState.gameStateText
         do {
             let reply: Quizgate_HeartbeatReply = try await api.post(
                 "heartbeat", token: token, request: request, reply: Quizgate_HeartbeatReply.self
             )
             applyServerTime(reply.serverTimeMs)
             state.deviceBound = reply.deviceBound
+            applyAvatar(reply.avatarID.rawValue)
             if reply.ruleChanged {
                 state.rule = mapRule(reply.rule)
                 reconfigureMonitoring()
@@ -412,6 +444,10 @@ final class AppModel: ObservableObject {
             logHeartbeat(reply.ruleChanged)
             await flushOutbox()
             await flushLogs()
+            // 放在两次 flush 之后、而不是 flushOutbox 里面：那条函数有四个提前 return
+            // （没令牌 / 没 api / 没绑定 / 队列空），把刷新写在里面就等于"只有真发过才更新页脚"，
+            // 而未绑定那一段时间恰好是家长最盯着页脚看的时候。
+            refreshChannelNote()
         } catch let error as ReportUnavailable {
             if error.needsReenroll {
                 state.deviceToken = nil
@@ -633,6 +669,10 @@ final class AppModel: ObservableObject {
             ("activity", state.monitoringActivity ?? "nil"),
             ("dailyDone", String(state.dailyLimitReachedOnDay ?? -1)),
             ("outbox", String(OutboxStore.load().count)),
+            // 这两格是"家长后台那只狐狸为什么不动"的第一现场：编号 0/nil 就不该画，
+            // 而 playState 恒为 idle 说明判定那一侧没给出动作档，不是形象的问题。
+            ("avatar", String(state.avatarId ?? -1)),
+            ("playState", currentPlayState().rawValue),
         ]
         DiagLog.record("app", "心跳 " + fields.map { "\($0.0)=\($0.1)" }.joined(separator: " "),
                        nowMs: state.nowMs())
@@ -735,18 +775,46 @@ final class AppModel: ObservableObject {
     }
 
     private func mapRule(_ snapshot: Quizgate_RuleSnapshot) -> RuleState {
-        // watchedPackages / gameMode 刻意不收：那是 Android 包名，iOS 消费不了。
+        // watchedPackages / gameMode 的其余字段刻意不收：那是 Android 包名与延期审批，
+        // iOS 消费不了。warningSeconds 是例外——它是"还剩多久到阈值"的判据，
+        // 只依赖规则本身，不依赖前台是哪个 App，所以 iOS 也用得上。
         RuleState(
             thresholdMinutes: Int(snapshot.thresholdMinutes),
             dailyLimitMinutes: Int(snapshot.dailyLimitMinutes),
             graceMinutes: Int(snapshot.graceMinutes),
             enabled: snapshot.enabled,
-            version: snapshot.version
+            version: snapshot.version,
+            warningSeconds: Int(snapshot.gameMode.warningSeconds)
         )
     }
 
-    private func applyServerTime(_ serverMs: Int64) {
-        guard serverMs > 0 else { return }
+    /// 家长后台那只狐狸和本机这只狐狸共用的那一档「孩子此刻在干嘛」。
+    ///
+    /// 判据只有三样：屏幕上有题、闸门想不想落盾、这一轮监控起了没有。
+    /// Android 那套「哪个 App 在前台」在这里没有对应物——iOS 拿不到前台包名，
+    /// 所以映射顺序与 Android 差一格，理由写在 AvatarPlayPolicy 里。
+    func currentPlayState() -> AvatarPlayState {
+        AvatarPlayPolicy.decide(state, decision: decision,
+                                questionOnScreen: question != nil, nowMs: state.nowMs())
+    }
+
+    /// 心跳每次都带形象，所以这里先比一次再写：无脑写一遍 state 就是一轮落盘，
+    /// 而这个值一年也变不了几次。
+    ///
+    /// 传进来的是 rawValue 而不是枚举本身：万一以后服务端加了第 8 档而这份生成物还不认，
+    /// swift-protobuf 给出的是 UNRECOGNIZED，问它要 rawValue 拿到的仍是那个编号，不会崩。
+    private func applyAvatar(_ number: Int) {
+        guard number != state.avatarId else { return }
+        state.avatarId = number
+        persist()
+        // 0 是 AVATAR_UNSPECIFIED，含义是「家长还没选过」而不是「没有形象」：
+        // 这时首页必须退回昵称首字头像，不能默认弹一只狐狸。这一条要连 0 一起记，
+        // 否则以后查「为什么这台设备没有狐狸」时没有源头可看。
+        DiagLog.record("app", number == 0 ? "家长没选形象，首页退回昵称头像" : "家长换了形象，编号 \(number)",
+                       nowMs: state.nowMs())
+    }
+
+    private func applyServerTime(_ serverMs: Int64) {        guard serverMs > 0 else { return }
         state.clockOffsetMs = serverMs - Int64(Date().timeIntervalSince1970 * 1000)
     }
 
