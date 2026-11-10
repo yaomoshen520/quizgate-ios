@@ -1,4 +1,5 @@
 import DeviceActivity
+import FamilyControls
 import Foundation
 import QuizGateKit
 
@@ -63,7 +64,20 @@ final class DeviceActivityMonitorExtension: DeviceActivityMonitor {
     private func recompute(reason: String) {
         var decision: GateDecision = .cannotEnforce(.stateCorrupt)
         var didWriteShield = false
+        // 扩展不信任主 App 跨进程写来的授权布尔：那个布尔靠 App Group 落盘，
+        // 新注册后「授权→重配→系统毫秒级回调 intervalDidStart」这条路上，主 App 的写
+        // 可能还没被 cfprefsd 刷到扩展能看见的盘上，扩展就会读到空授权判 notAuthorized，
+        // 于是该落盾的进程根本没落盾。授权是设备/账号级、任何带 family-controls 权限的
+        // 进程都能直接问系统 —— 这里就问系统，不再依赖跨进程布尔。
+        let liveStatus = AuthorizationCenter.shared.authorizationStatus
+        DiagLog.record("monitor",
+                       "扩展侧向系统核实授权 status=" + String(describing: liveStatus),
+                       level: liveStatus == .approved ? .info : .error,
+                       nowMs: Int64(Date().timeIntervalSince1970 * 1000))
         let result = StateStore.mutate { state in
+            state.authorization = AuthorizationState(
+                raw: liveStatus == .approved ? "approved" : "notApproved",
+                checkedAtMs: state.nowMs())
             decision = GatePolicy.decide(state, nowMs: state.nowMs())
             didWriteShield = ShieldWriter.reconcile(decision: decision, state: &state)
         }
