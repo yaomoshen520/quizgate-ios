@@ -42,7 +42,7 @@ public enum ShieldWriter {
         // 无法离线证明回读真编进了包。前导标签刻意 >15 字节，落 __cstring 可被扫到。
         let readApps = store.shield.applications?.count ?? -1
         let readCats = store.shield.applicationCategories == nil ? "nil" : "set"
-        let wrote = "落盾写入选择 apps=" + String(appCount) + " cats=" + String(catCount) + " web=" + String(webCount)
+        let wrote = "落盾写入选择 apps=" + String(appCount) + " cats=" + String(catCount) + " web=" + String(webCount) + " iec=" + String(selection.includeEntireCategory)
         let readback = "写后回读系统盾 apps=" + String(readApps) + " cats=" + readCats
         DiagLog.record("shield", wrote, level: .warn)
         DiagLog.record("shield", readback, level: .warn)

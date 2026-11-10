@@ -17,7 +17,10 @@ final class AppModel: ObservableObject {
     @Published var question: Quizgate_Question?
     @Published var explanation: String?
     @Published var answeredCorrect = false
-    @Published var selection = FamilyActivitySelection()
+    // includeEntireCategory=true：iOS 选择器会把单选 App 悄悄合并成分类令牌（kingstinct #95），
+    // 而分类令牌落盾会被系统拒收（实测回读 nil）。这个开关让选择器即使合并成分类，
+    // 也把分类里的 App 令牌一并吐出来，好让我们走「按 App 落盾」这条系统认的主路径。
+    @Published var selection = FamilyActivitySelection(includeEntireCategory: true)
     @Published var showSelectionPicker = false
     @Published var monitoringNote: String?
     /// 通知权限的原始状态，不是 Bool：「还没问过」还能自己弹一次窗，
@@ -115,7 +118,14 @@ final class AppModel: ObservableObject {
             DiagLog.record("state", "本地状态读不出来：" + reason + "，盾牌保持原样", level: .error)
         }
         if let restored = SelectionArchive.decode(state.selectionData) {
-            selection = restored
+            // includeEntireCategory 是 let，只能在 init 时定；旧存档是 false（红果被合并成
+            // 了分类令牌）。重建一份 true 的并搬回令牌，下次「重新选择」时选择器才会把
+            // 分类里的 App 令牌吐出来。令牌本身不会被这一步展开，必须家长再选一次。
+            var expanded = FamilyActivitySelection(includeEntireCategory: true)
+            expanded.applicationTokens = restored.applicationTokens
+            expanded.categoryTokens = restored.categoryTokens
+            expanded.webDomainTokens = restored.webDomainTokens
+            selection = expanded
         }
     }
 
@@ -245,6 +255,12 @@ final class AppModel: ObservableObject {
     /// 选完必须立刻重配监控，否则系统不知道要盯哪些 App。
     func saveSelection() {
         state.selectionData = SelectionArchive.encode(selection)
+        DiagLog.record("selection",
+                       "选择落盘令牌 apps=" + String(selection.applicationTokens.count)
+                           + " cats=" + String(selection.categoryTokens.count)
+                           + " web=" + String(selection.webDomainTokens.count)
+                           + " iec=" + String(selection.includeEntireCategory),
+                       level: .warn)
         persist()
         reconfigureMonitoring()
     }
