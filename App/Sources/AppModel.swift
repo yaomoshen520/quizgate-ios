@@ -605,30 +605,61 @@ final class AppModel: ObservableObject {
     }
 
     /// VPN 可行性探测（调试，查完整段删）。侧载包里注入的 Personal VPN entitlement
-    /// 系统认不认，唯一判据就是 saveToPreferences 成不成：
-    /// 成 ⟹ 侧载也能走 VPN 掐网，继续做原型；败 ⟹ VPN 和 Screen Time 一样必须付费账号 + 描述文件。
-    /// isEnabled=false 只测「能不能落进系统 VPN 库」，不真发起连接；IKEv2 参数是假的无所谓，
-    /// 域/码会告诉我们失败到底是「没 entitlement」还是「配置不合法」——两者要分开读。
+    /// 系统认不认，唯一判据就是 saveToPreferences 成不成。
+    ///
+    /// 上一枚包（7d0cbb9）交的是「什么都没设」的 IKEv2，系统回 NEVPNErrorDomain code=1
+    /// 「Unsupported authenticationMethod」——那是配置校验层的说法，回答不了权限层：
+    /// 校验到底排在 entitlement 检查之前还是之后，我没有任何官方原文可凭，只能自己劈变量。
+    /// 一次点击连打三份配置，每份只动一个字段：
+    /// A/B 任一存成功 ⟹ 权限层认这枚注入的 entitlement，直接开 App 代理原型；
+    /// 三份全败但报错字段在变（authenticationMethod → identity → …）⟹ 还卡在配置层，
+    /// 必须再编一枚「删掉 entitlement」的对照包才能把两种失败分开；
+    /// C 是上一轮形状的原样复现，兼作「这枚包真在跑新代码」的对照。
     func debugProbeVpn() {
+        // A：只关掉扩展认证。文档写明 authenticationMethod=.none 时只要
+        // useExtendedAuthentication 为真就仍会协商扩展认证，而它的默认值我没拿到原文，
+        // 所以先单独把这个开关拨到关，看报错是不是就消失了。
+        let a = NEVPNProtocolIKEv2()
+        a.serverAddress = "quizgate-probe.invalid"
+        a.useExtendedAuthentication = false
+
+        // B：把认证方式显式设成 IKEv2 认的值，并补上两个标识符。
+        // 没有身份数据是故意的 —— 若报错从「认证方式」挪到「身份/证书」那一格，
+        // 就说明校验器是逐字段走的，上一轮的报错纯属配置。
+        let b = NEVPNProtocolIKEv2()
+        b.serverAddress = "quizgate-probe.invalid"
+        b.useExtendedAuthentication = false
+        b.authenticationMethod = NEVPNIKEAuthenticationMethod.certificate
+        b.localIdentifier = "quizgate-probe"
+        b.remoteIdentifier = "quizgate-probe"
+
+        // C：上一枚包的原样，做对照。
+        let c = NEVPNProtocolIKEv2()
+        c.serverAddress = "quizgate-probe.invalid"
+
+        probeVpnArm(["A-扩展认证关", "B-显式证书认证", "C-上一轮原样"], [a, b, c], 0)
+    }
+
+    /// 逐份存、逐份记，跑完就停。三份共用 NEVPNManager 这一个槽位，所以必须串行：
+    /// 并发提交的话后一份会盖掉前一份，日志就分不清是哪份配置的结果。
+    private func probeVpnArm(_ labels: [String], _ protos: [NEVPNProtocol], _ i: Int) {
+        if i >= protos.count { return }
         let manager = NEVPNManager.shared()
-        let proto = NEVPNProtocolIKEv2()
-        // 只碰已确认存在的成员：基类 NEVPNProtocol 上是 serverAddress（不是 serverURL），
-        // 也没有 serverIdentifier；manager 的协议属性叫 protocol，是 Swift 关键字要反引号。
-        proto.serverAddress = "quizgate-probe.invalid"
-        manager.`protocol` = proto
+        manager.`protocol` = protos[i]
         manager.isEnabled = false
         manager.saveToPreferences { err in
-            if let e = err as NSError? {
-                DiagLog.record("vpn",
-                               "存 VPN 配置失败 domain=" + e.domain
-                                   + " code=" + String(e.code)
-                                   + " desc=" + e.localizedDescription,
-                               level: .error)
-            } else {
-                DiagLog.record("vpn", "存 VPN 配置成功：系统认这枚 Personal VPN entitlement",
-                               level: .info)
+            let e = err as NSError?
+            let line = e == nil
+                ? "存 VPN 配置成功：系统认这枚 Personal VPN entitlement"
+                : "存 VPN 配置失败 domain=" + e!.domain
+                    + " code=" + String(e!.code)
+                    + " desc=" + e!.localizedDescription
+            DiagLog.record("vpn", "arm=" + labels[i] + " " + line,
+                           level: e == nil ? .info : .error)
+            Task { @MainActor in
+                await self.flushLogs()
+                self.probeVpnArm(labels, protos, i + 1)
             }
-            Task { @MainActor in await self.flushLogs() }
         }
     }
 
