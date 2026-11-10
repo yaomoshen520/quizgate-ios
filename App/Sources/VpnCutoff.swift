@@ -4,8 +4,9 @@ import QuizGateKit
 
 /// 主 App 这一侧的 VPN 掐网开关。
 ///
-/// 它不碰任何数据包，只做四件事：认出（或第一次建好）我们那枚 tunnel 配置、存进系统偏好、
-/// 起它或停它、然后把系统给的回答一句一行落到诊断日志里。
+/// 它不碰任何数据包，只做五件事：认出（或第一次建好）我们那枚 tunnel 配置、存进系统偏好、
+/// 起它或停它、把系统给的回答一句一行落到诊断日志里、以及每 30 秒对一次账 ——
+/// 系统那一边长成的样子和闸门想要的那一档不一致时补发一次（见 reconcile()）。
 ///
 /// 为什么"起"要分三步（存 → 重新读一份 → 起）：Apple 的口径是存完偏好之后手上那份 manager
 /// 不能再用于连接，直接 start 得到的是 .invalid。那是我们自己的用法错误，
@@ -28,7 +29,20 @@ final class VpnCutoff {
     /// 每 30 秒往系统偏好里存一份 VPN 配置 —— 那本身就是可观测的骚扰。
     private var lastApplied: Bool?
 
-    /// 手上还有一件没做完。这一格丢掉的指令不致命：30 秒后心跳会再翻译一次。
+    /// 闸门「此刻想要哪一档」，和 lastApplied 分两本账记：后者只记这条指令下没下过，
+    /// 这一格记系统那边应该长成什么样。分开的理由是孩子在设置里手动关掉 VPN 那一刻 ——
+    /// 指令没失效，失效的是执行结果，而 apply() 那道幂等闸比的是前者，会对不上账一路短路。
+    private var desired: Bool?
+
+    /// 为同一个对不上账的状态连续补发的次数。对上就归零。
+    private var reconcileTries = 0
+
+    /// 补发上限：到点就停手并明说，不再每 30 秒往系统偏好里存一份。
+    /// 5 次 ≈ 两个半分钟的争取，之后留给家长那条日志说话。
+    private static let reconcileLimit = 5
+
+    /// 手上还有一件没做完。丢掉的指令不再致命：想要的那一档已经另记在 desired 里，
+    /// 下一拍 reconcile() 会照这本账补。
     private var inFlight = false
 
     /// 状态轮询上一次看到的系统状态文字。同样只为了"变了才记一行"。
@@ -43,6 +57,10 @@ final class VpnCutoff {
 
     /// wantsCutoff = 闸门这一刻想把这台设备断网。
     func apply(wantsCutoff: Bool, nowMs: Int64) {
+        // 先记账再决定动不动手：下面两道闸都可能让这一条指令这一拍不落地，
+        // 而"想不想要"和"落没落地"是两回事，前者落了账 reconcile() 才有得补。
+        if desired != wantsCutoff { reconcileTries = 0 }
+        desired = wantsCutoff
         guard wantsCutoff != lastApplied else { return }
         guard !inFlight else {
             let wanted = describe(wantsCutoff)
@@ -153,6 +171,9 @@ final class VpnCutoff {
     private func poll(nowMs: Int64) async {
         let managers = await Self.loadAll()
         guard let manager = managers.first(where: Self.isOurs) else {
+            // 无配置也是一档"稳定错着"：孩子能在设置里把那枚配置整条删掉，
+            // 而 perform() 见到 found == nil 会重新建好，所以这一格照样要过一遍账。
+            await reconcile(status: "无配置", nowMs: nowMs)
             if lastSeenStatus != "无配置" {
                 lastSeenStatus = "无配置"
                 let text = "VPN：系统里还没有那枚配置"
@@ -162,6 +183,8 @@ final class VpnCutoff {
             return
         }
         let status = Self.statusText(manager.connection.status)
+        // 补账排在"变了才记行"之前：状态一直稳定地错着，恰恰是最不需要变化通知的那种错。
+        await reconcile(status: status, nowMs: nowMs)
         guard status != lastSeenStatus else { return }
         let previous = lastSeenStatus
         lastSeenStatus = status
@@ -183,6 +206,42 @@ final class VpnCutoff {
         }
         note = text
         onChange?(text)
+    }
+
+    /// 系统那一边和想要的这一档对不上账时补发一次。心跳每 30 秒经 poll() 走一遍。
+    ///
+    /// 为什么必须由这里补而不能靠 apply()：那道幂等闸比的是"我上次下过什么指令"，
+    /// 而孩子手动关掉 VPN 之后指令并没有失效，失效的是执行结果。这时 desired 与
+    /// lastApplied 相等 ⇒ apply() 安静短路，于是"该断网"能一路保持到设备重启。
+    /// 上一版真机日志里的 `状态变化 已连接 → 断开` 就是这么一条只记录、不处理的行。
+    private func reconcile(status: String, nowMs: Int64) async {
+        guard let want = desired else { return }
+        // 正在起 / 正在停 / 重手中 / 无效都算"上一条还在落地"，不是对不上账。
+        let stable = status == "已连接" || status == "断开" || status == "无配置"
+        guard stable else { return }
+        let got = status == "已连接"
+        guard got != want else {
+            reconcileTries = 0
+            return
+        }
+        guard !inFlight, reconcileTries < Self.reconcileLimit else { return }
+        reconcileTries += 1
+        let tried = String(reconcileTries)
+        let head = "系统那边 ≠ 想要（想要=" + describe(want) + "，读到=" + status + "）"
+        let text = head + "，补发第 " + tried + " 次"
+        DiagLog.record("vpn", text, level: .warn, nowMs: nowMs)
+        note = text
+        onChange?(text)
+        if reconcileTries == Self.reconcileLimit {
+            let last = head + "，补发满 " + String(Self.reconcileLimit) + " 次仍不对，停手等家长处理"
+            DiagLog.record("vpn", last, level: .error, nowMs: nowMs)
+            note = last
+            onChange?(last)
+        }
+        inFlight = true
+        let outcome = await perform(wantsCutoff: want, nowMs: nowMs)
+        inFlight = false
+        if outcome.applied { lastApplied = want }
     }
 
     // MARK: - 系统调用
