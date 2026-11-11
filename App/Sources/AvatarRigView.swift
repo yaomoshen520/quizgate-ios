@@ -70,7 +70,7 @@ struct AvatarRigView: View {
             // 支点是按母版 viewBox 512 给的，绘制时折算到这个方框。
             let fit = box / FoxRig.canvas
             for layer in rig.layers {
-                guard let image = layer.image(rig: rig, scarf: scarf, expression: pose.expression) else {
+                guard let image = layer.image(rig: rig, scarf: scarf, expression: pose.expression, avatar: avatarId) else {
                     // 表里没有的图层就整块不画：半只狐狸比没有狐狸更容易被当成显示故障报上来。
                     continue
                 }

@@ -32,6 +32,8 @@ public enum AvatarPose {
     public static let layerHead = "layer-head"
     public static let layerFace = "layer-face"
     public static let layerScarf = "layer-scarf"
+    public static let layerDetailBack = "layer-detail-back"
+    public static let layerDetailFront = "layer-detail-front"
 
     public static let exprIdle = "idle"
     public static let exprHappy = "happy"
@@ -100,6 +102,8 @@ public enum AvatarPose {
             parts[layerTail] = Part(rotate: swing(phaseOf(nowMs, tailSlowMs), -9, 15))
             // 待机时耳朵偶尔抖一下：这几格都只有 40~76pt，光靠呼吸看不出来。
             parts[layerEars] = Part(rotate: twitch(phaseOf(nowMs, twitchMs)))
+            // 头后的马尾/丸子头轻轻晃（和后台 detail-sway 同周期同幅度）；刘海贴着头不动。
+            parts[layerDetailBack] = Part(rotate: swing(phaseOf(nowMs, tailSlowMs), -2.5, 2.5))
 
         case .playing:
             let hop = phaseOf(nowMs, hopMs)
@@ -109,13 +113,20 @@ public enum AvatarPose {
             parts[layerArmRight] = Part(rotate: swing(hop, 18, -20))
 
         case .quiz:
-            parts[layerHead] = Part(rotate: swing(phaseOf(nowMs, tiltMs), -14, 14))
+            let tilt = swing(phaseOf(nowMs, tiltMs), -14, 14)
+            parts[layerHead] = Part(rotate: tilt)
+            // 头发/眼镜/帽子绕同一个支点跟头一起歪，不然头从头发里滑出去。
+            parts[layerDetailBack] = Part(rotate: tilt)
+            parts[layerDetailFront] = Part(rotate: tilt)
             // 耳朵只在 62%~78% 那一小段动，其余时间是直的：抽样只取半周期会看到"没动"。
             parts[layerEars] = Part(rotate: twitch(phaseOf(nowMs, twitchMs)))
 
         case .warning:
             let p = phaseOf(nowMs, shakeMs)
-            parts[layerHead] = Part(rotate: swing(p, -12, 12))
+            let shake = swing(p, -12, 12)
+            parts[layerHead] = Part(rotate: shake)
+            parts[layerDetailBack] = Part(rotate: shake)
+            parts[layerDetailFront] = Part(rotate: shake)
             parts[layerEars] = Part(rotate: swing(p, 0, -9), dy: swing(p, 0, 22 / canvas))
         }
         return Pose(expression: expressionOf(state), parts: parts)

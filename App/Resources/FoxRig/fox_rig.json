@@ -65,6 +65,15 @@
       ]
     },
     {
+      "name": "layer-detail-back",
+      "file": "fox_detail_back_mauve",
+      "slot": "detail-back",
+      "pivot": [
+        256,
+        252
+      ]
+    },
+    {
       "name": "layer-head",
       "file": "fox_head",
       "slot": null,
@@ -78,6 +87,15 @@
       "file": "fox_face_idle",
       "slot": "face",
       "pivot": null
+    },
+    {
+      "name": "layer-detail-front",
+      "file": "fox_detail_front_amber",
+      "slot": "detail-front",
+      "pivot": [
+        256,
+        252
+      ]
     },
     {
       "name": "layer-scarf",
@@ -131,6 +149,43 @@
     {
       "name": "think",
       "file": "fox_face_think"
+    }
+  ],
+  "details": [
+    {
+      "id": "FOX_AMBER",
+      "back": null,
+      "front": "fox_detail_front_amber"
+    },
+    {
+      "id": "FOX_SAGE",
+      "back": null,
+      "front": "fox_detail_front_sage"
+    },
+    {
+      "id": "FOX_SLATE",
+      "back": null,
+      "front": "fox_detail_front_slate"
+    },
+    {
+      "id": "FOX_MAUVE",
+      "back": "fox_detail_back_mauve",
+      "front": "fox_detail_front_mauve"
+    },
+    {
+      "id": "FOX_SAND",
+      "back": null,
+      "front": "fox_detail_front_sand"
+    },
+    {
+      "id": "FOX_TEAL",
+      "back": "fox_detail_back_teal",
+      "front": "fox_detail_front_teal"
+    },
+    {
+      "id": "FOX_ROSE",
+      "back": null,
+      "front": "fox_detail_front_rose"
     }
   ]
 }

@@ -24,16 +24,25 @@ final class FoxRig {
         let pivotX: CGFloat
         let pivotY: CGFloat
 
-        /// 这一层这一刻该画哪张图；围巾跟家长挑的那一档走，表情跟动作档位走。
-        func image(rig: FoxRig, scarf: String, expression: String) -> Image? {
+        /// 这一层这一刻该画哪张图；围巾/细节跟家长挑的那一档走，表情跟动作档位走。
+        func image(rig: FoxRig, scarf: String, expression: String, avatar: Int) -> Image? {
+            let detail = rig.details.indices.contains(avatar - 1) ? rig.details[avatar - 1] : nil
             let key: String?
             switch slot {
             case "scarf": key = scarf
             case "face": key = rig.faces[expression] ?? rig.faces[AvatarPose.exprIdle]
+            case "detail-back": key = detail?.back
+            case "detail-front": key = detail?.front
             default: key = file
             }
             return key.flatMap { rig.images[$0] }
         }
+    }
+
+    /// 一只形象的拟人化细节图名：头后一组、脸前一组，没有那一槽就是 nil（整块不画）。
+    struct Detail {
+        let back: String?
+        let front: String?
     }
 
     let layers: [Layer]
@@ -41,6 +50,7 @@ final class FoxRig {
     /// 由素材导出脚本交叉断言看着，所以这里不再另写一张编号→名字的映射。
     let scarves: [String]
     let faces: [String: String]
+    let details: [Detail]
     let images: [String: Image]
 
     private static var cached: FoxRig?
@@ -71,17 +81,20 @@ final class FoxRig {
         }
         struct ScarfRow: Decodable { let id: String; let file: String }
         struct FaceRow: Decodable { let name: String; let file: String }
+        struct DetailRow: Decodable { let id: String; let back: String?; let front: String? }
         // 刻意不收 size：画布边长两端都写死 512（AvatarPose.canvas 也是它），
         // 多读一份只会多出一个"表和常量不一致时听谁的"的问题。
         let layers: [LayerRow]
         let scarves: [ScarfRow]
         let faces: [FaceRow]
+        let details: [DetailRow]
     }
 
-    private init(layers: [Layer], scarves: [String], faces: [String: String], images: [String: Image]) {
+    private init(layers: [Layer], scarves: [String], faces: [String: String], details: [Detail], images: [String: Image]) {
         self.layers = layers
         self.scarves = scarves
         self.faces = faces
+        self.details = details
         self.images = images
     }
 
@@ -92,7 +105,7 @@ final class FoxRig {
             DiagLog.record("avatar", "几何表 fox_rig.json 读不出来，这一版不画狐狸", level: .error)
             return nil
         }
-        guard !table.layers.isEmpty, !table.scarves.isEmpty, !table.faces.isEmpty else {
+        guard !table.layers.isEmpty, !table.scarves.isEmpty, !table.faces.isEmpty, !table.details.isEmpty else {
             DiagLog.record("avatar", "几何表是空的，这一版不画狐狸", level: .error)
             return nil
         }
@@ -103,9 +116,11 @@ final class FoxRig {
         }
         let scarves = table.scarves.map { $0.file }
         let faces = Dictionary(uniqueKeysWithValues: table.faces.map { ($0.name, $0.file) })
+        let details = table.details.map { Detail(back: $0.back, front: $0.front) }
 
         // 表里点到的图名一个都不能缺：缺一张就说明素材和几何表不是同一次导出的。
-        let wanted = Array(Set(layers.map { $0.file } + scarves + faces.values)).sorted()
+        let detailFiles = details.flatMap { [$0.back, $0.front].compactMap { $0 } }
+        let wanted = Array(Set(layers.map { $0.file } + scarves + faces.values + detailFiles)).sorted()
         var images: [String: Image] = [:]
         var missing: [String] = []
         for name in wanted {
@@ -116,7 +131,7 @@ final class FoxRig {
                            level: .error)
             return nil
         }
-        return FoxRig(layers: layers, scarves: scarves, faces: faces, images: images)
+        return FoxRig(layers: layers, scarves: scarves, faces: faces, details: details, images: images)
     }
 
     /// 素材是平铺拷进包根的（XcodeGen 把 App/Resources 下的文件当资源逐个拷），
