@@ -132,22 +132,49 @@ public enum AvatarPose {
         return Pose(expression: expressionOf(state), parts: parts)
     }
 
-    /// 答题页那一下互动：整只走出去 → 停一下回头看看孩子 → 再走回来。
+    /// 互动种类：走路（被点）、庆祝（答对）、挠头（答错）。与 Android `AvatarPose.Interaction` 逐条对拷。
+    public enum Interaction { case walk, celebrate, scratch }
+
+    /// 兼容旧调用：不带类型就是走路。
+    public static func interaction(_ progress: Float) -> Pose { interaction(.walk, progress) }
+
+    /// 答题页那一下互动。三种各有性格：走路（视图横移）、庆祝（原地跳两下举双手）、挠头（歪头抬爪想一想）。
     ///
-    /// **这里只管四肢怎么倒腾，不管位移。** 位移以前写在图层上，谁没被点名就留在原地——
-    /// 手臂和尾巴只转不移、后腿只跟三成，结果就是"身子跑了手脚还在原地"。
-    /// 整只一起走改由绘制端平移整个视图，十个图层天然同步，少写一层也不会漏。
-    public static func interaction(_ progress: Float) -> Pose {
-        let stride = strideOf(progress)
-        let parts: [String: Part] = [
-            layerArmLeft: Part(rotate: 20 * stride),
-            layerArmRight: Part(rotate: -20 * stride),
-            layerHind: Part(rotate: 14 * stride),
-            layerTail: Part(rotate: 22 * stride),
-            layerEars: Part(rotate: -6 * stride),
-        ]
-        return Pose(expression: exprHappy, parts: parts)
+    /// **这里只管四肢怎么倒腾，不管位移。** 位移由绘制端平移整个视图，十个图层天然同步，少写一层也不会漏。
+    public static func interaction(_ type: Interaction, _ progress: Float) -> Pose {
+        let p = clamped01(progress)
+        switch type {
+        case .walk:
+            let stride = strideOf(p)
+            return Pose(expression: exprHappy, parts: [
+                layerArmLeft: Part(rotate: 20 * stride),
+                layerArmRight: Part(rotate: -20 * stride),
+                layerHind: Part(rotate: 14 * stride),
+                layerTail: Part(rotate: 22 * stride),
+                layerEars: Part(rotate: -6 * stride),
+            ])
+        case .celebrate:
+            let hop = jump(p)
+            return Pose(expression: exprHappy, parts: [
+                layerArmLeft: Part(rotate: -130 * hop),
+                layerArmRight: Part(rotate: 130 * hop),
+                layerTail: Part(rotate: 26 * sinF(2 * piF * p * 4)),
+                layerEars: Part(rotate: -10 * hop),
+                layerBody: Part(scaleY: 1 + 0.06 * hop),
+            ])
+        case .scratch:
+            let tilt = sinF(piF * p)
+            return Pose(expression: exprThink, parts: [
+                layerHead: Part(rotate: 12 * tilt),
+                layerArmRight: Part(rotate: -120 * tilt),
+                layerEars: Part(rotate: -8 * tilt),
+                layerTail: Part(rotate: 8 * tilt),
+            ])
+        }
     }
+
+    /// 庆祝跳的高度表：两下跳（0→1→0→1→0），视图按它上下跳。与 Android `jump` 同式。
+    public static func jump(_ progress: Float) -> Float { abs(sinF(2 * piF * clamped01(progress))) }
 
     /// 走出去多远：按**这个视图自己宽度**的倍数算，3.2 倍 = 真的离开那格，不是原地挪一挪。
     public static let walkWidths: Float = 3.2

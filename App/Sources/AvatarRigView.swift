@@ -31,6 +31,9 @@ struct AvatarRigView: View {
     /// 回到前台也算一次打开——`onAppear` 那时不会再触发（视图一直挂着），所以两个入口都要接。
     /// 撞车不要紧：`playInteraction()` 在上一场没演完时直接返回 false，不会把动作截断重来。
     var greetsOnAppear: Bool = false
+    /// 答对/答错时由宿主置 true，触发庆祝/挠头（变成 true 的那一刻演一次）。
+    var celebrate: Bool = false
+    var scratch: Bool = false
 
     @StateObject private var clock = FoxClock()
     @Environment(\.scenePhase) private var scenePhase
@@ -47,19 +50,32 @@ struct AvatarRigView: View {
         // （可见性回调比布局早，那一刻宽还是 0，之后没有任何人再叫过一次）。
         let progress = clock.interactionProgress
         guard let progress else {
-            return Frame(pose: AvatarPose.loop(playState, nowMs: clock.uptimeMs), walk: 0, bob: 0)
+            return Frame(pose: AvatarPose.loop(playState, nowMs: clock.uptimeMs), walk: 0, bob: 0, type: .walk)
         }
-        return Frame(pose: AvatarPose.interaction(progress),
-                     walk: AvatarPose.walk(progress),
-                     // 上下颠一下跟着步子走，不是跟着位移走：位移在中段是平的（站着看孩子），
-                     // 那时该停下来，而不是继续飘。
-                     bob: abs(AvatarPose.strideOf(progress)))
+        let type = clock.interactionType
+        let walk: Float
+        let bob: Float
+        switch type {
+        case .walk:
+            walk = AvatarPose.walk(progress)
+            // 上下颠一下跟着步子走，不是跟着位移走：位移在中段是平的（站着看孩子），
+            // 那时该停下来，而不是继续飘。
+            bob = abs(AvatarPose.strideOf(progress))
+        case .celebrate:
+            walk = 0
+            bob = AvatarPose.jump(progress)
+        case .scratch:
+            walk = 0
+            bob = 0
+        }
+        return Frame(pose: AvatarPose.interaction(type, progress), walk: walk, bob: bob, type: type)
     }
 
     private struct Frame {
         let pose: AvatarPose.Pose
         let walk: Float
         let bob: Float
+        let type: AvatarPose.Interaction
     }
 
     private func canvas(rig: FoxRig, scarf: String, frame: Frame) -> some View {
@@ -99,7 +115,7 @@ struct AvatarRigView: View {
         // 整只狐狸的移动写在**视图自己**身上，不写在图层上。写在图层上就得逐层点名，
         // 漏一层那一层留在原地——Android 上一版正是手臂和尾巴没被点名，于是"身子跑了手脚还在原地"。
         .offset(x: CGFloat(frame.walk) * size * CGFloat(AvatarPose.walkWidths),
-                y: -CGFloat(frame.bob) * size * 0.07)
+                y: -CGFloat(frame.bob) * size * (frame.type == .celebrate ? 0.18 : 0.07))
         // 走出去要压在题目卡上面：它是这一屏第一个孩子，不抬 zIndex 会被后面的卡盖住半只。
         .zIndex(frame.walk > 0 ? 1 : 0)
         .contentShape(Rectangle())
@@ -113,6 +129,9 @@ struct AvatarRigView: View {
         .onChange(of: scenePhase) { phase in
             if phase == .active { clock.start(); greet() } else { clock.stop() }
         }
+        // 答对庆祝、答错挠头：宿主把对应标志置 true 的那一刻演一次。
+        .onChange(of: celebrate) { on in if on { clock.playInteraction(.celebrate) } }
+        .onChange(of: scratch) { on in if on { clock.playInteraction(.scratch) } }
     }
 
     /// 开场那一次互动。必须在 `clock.start()` 之后叫：节拍器没跑起来时
@@ -146,6 +165,7 @@ final class FoxClock: ObservableObject {
 
     @Published private(set) var uptimeMs: Int64 = FoxClock.now()
     @Published private(set) var interactionEndsAtMs: Int64 = 0
+    @Published private(set) var interactionType: AvatarPose.Interaction = .walk
 
     private var task: Task<Void, Never>?
 
@@ -175,12 +195,14 @@ final class FoxClock: ObservableObject {
         task = nil
         // 界面不可见时不许停在"走到一半"的位置：回来时它该坐在原来的格子里。
         interactionEndsAtMs = 0
+        interactionType = .walk
     }
 
-    /// 演一次"走出去再回来"。返回 false 表示这一刻不该演：没在跑，或上一场还没演完。
+    /// 演一次互动：走路（被点）、庆祝（答对）、挠头（答错）。返回 false 表示这一刻不该演。
     @discardableResult
-    func playInteraction() -> Bool {
+    func playInteraction(_ type: AvatarPose.Interaction = .walk) -> Bool {
         guard task != nil, !interactionRunning else { return false }
+        interactionType = type
         interactionEndsAtMs = Self.now() + AvatarPose.interactionMs
         uptimeMs = Self.now()
         return true

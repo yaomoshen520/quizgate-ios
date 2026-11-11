@@ -38,7 +38,9 @@ struct QuizView: View {
                 AvatarRigView(avatarId: model.state.avatarId ?? 0,
                               playState: .quiz,
                               size: Theme.Metric.avatarQuiz,
-                              playsOnTap: true)
+                              playsOnTap: true,
+                              celebrate: model.answeredCorrect,
+                              scratch: model.explanation != nil && !model.answeredCorrect)
                 HStack {
                     // 三枚标签在窄屏上会挤到「关闭」那颗按钮 off-screen，所以标签可截断、
                     // 按钮不可压缩：知识点名字长是常态，关闭入口消失了孩子就退不出这一屏。
