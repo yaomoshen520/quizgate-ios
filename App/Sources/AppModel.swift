@@ -17,6 +17,10 @@ final class AppModel: ObservableObject {
     @Published var question: Quizgate_Question?
     @Published var explanation: String?
     @Published var answeredCorrect = false
+    // 答题养成：答对回包带回的积分/连对/等级/徽章，成功层显示。离线本地判分没有这一份（achievement=nil）。
+    @Published var pointsEarned: Int32 = 0
+    @Published var achievement: Quizgate_AchievementState?
+    @Published var newBadges: [String] = []
     // includeEntireCategory=true：iOS 选择器会把单选 App 悄悄合并成分类令牌（kingstinct #95），
     // 而分类令牌落盾会被系统拒收（实测回读 nil）。这个开关让选择器即使合并成分类，
     // 也把分类里的 App 令牌一并吐出来，好让我们走「按 App 落盾」这条系统认的主路径。
@@ -89,6 +93,7 @@ final class AppModel: ObservableObject {
         ensureMonitoringArmed()
         Task { await enrollIfNeeded() }
         startHeartbeat()
+        startRemoteStream()
         ShieldPrompt.onOpenQuiz = { [weak self] in
             // 通知被点开 = 孩子终于走到了答题入口。这里只取题，不解盾：
             // 解盾必须答对，答对了才有那一份证据。
@@ -408,6 +413,14 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// 远程即时控制：共享 SSE 通道收到 quiz-now 就取题弹答题页。主 App 活着时即时收（iOS 后台天花板见 RemoteCommandStream）。
+    private var remoteStream: RemoteCommandStream?
+    private func startRemoteStream() {
+        remoteStream?.stop()
+        remoteStream = RemoteCommandStream { [weak self] in await self?.loadQuestion() }
+        remoteStream?.start()
+    }
+
     func heartbeat() async {
         guard let token = state.deviceToken, let api else { return }
         var request = Quizgate_HeartbeatRequest()
@@ -575,6 +588,9 @@ final class AppModel: ObservableObject {
                 state.ledger.lastKnowledgePoint = nil
                 answeredCorrect = true
                 explanation = nil
+                pointsEarned = reply.pointsEarned
+                achievement = reply.hasAchievement ? reply.achievement : nil
+                newBadges = reply.newBadges
                 reconcileShield()
                 reconfigureMonitoring()
             } else {

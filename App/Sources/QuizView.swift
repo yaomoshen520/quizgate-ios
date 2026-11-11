@@ -133,6 +133,24 @@ struct QuizView: View {
             Text("这一轮重新开始计时，去玩吧")
                 .font(.system(size: Theme.Text.body))
                 .foregroundStyle(Theme.Palette.inkSoft)
+            // 答题养成：答对那一刻的即时反馈，和安卓答对页同一口径。离线本地判分没有成就，这一块不显示。
+            if let ach = model.achievement {
+                VStack(spacing: Theme.Space.s2) {
+                    Text("+\(model.pointsEarned) 积分 · 连对 \(ach.currentStreak)")
+                        .font(.system(size: Theme.Text.body, weight: .bold))
+                        .foregroundStyle(Theme.Palette.ink)
+                    Text(ach.pointsToNext > 0
+                         ? "Lv\(ach.level) \(ach.levelTitle) · 距下一级还需 \(ach.pointsToNext) 积分"
+                         : "Lv\(ach.level) \(ach.levelTitle) · 已满级")
+                        .font(.system(size: Theme.Text.caption))
+                        .foregroundStyle(Theme.Palette.inkSoft)
+                    if !model.newBadges.isEmpty {
+                        Text("新徽章：" + model.newBadges.joined(separator: "、"))
+                            .font(.system(size: Theme.Text.caption, weight: .bold))
+                            .foregroundStyle(Theme.Palette.brand700)
+                    }
+                }
+            }
             Button {
                 model.question = nil
                 dismiss()

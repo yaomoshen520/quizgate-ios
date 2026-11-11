@@ -157,10 +157,53 @@ message AnswerRequest {
   int32 selected_index = 2;
 }
 
+// 答题养成：孩子的积分/连对/等级/徽章。服务端在判分那一刻维护，答对回包即时带回，
+// 家长端经孩子概览读取。等级由累计积分推导、不单独存列；徽章只存已解锁的编号。
+message AchievementState {
+  int32 points = 1;
+  int32 total_correct = 2;
+  int32 current_streak = 3;
+  int32 best_streak = 4;
+  int32 level = 5;
+  string level_title = 6;
+  // 距下一级还需多少积分；已满级回 0。
+  int32 points_to_next = 7;
+  // 已解锁徽章的标题，给孩子/家长直接展示。
+  repeated string badges = 8;
+}
+
 // 答错时只回解析，不回正确项下标——闸门规则是"再做一道同类题"，不是"告诉你答案"。
 message AnswerReply {
   bool correct = 1;
   string explanation = 2;
+  // 本次答对获得的积分（答错为 0）。
+  int32 points_earned = 3;
+  // 判分后的最新成就状态；离线本地判分不带这一份。
+  AchievementState achievement = 4;
+  // 本次新解锁的徽章标题，孩子端用来弹一下。
+  repeated string new_badges = 5;
+}
+
+// 家长读某个孩子的答题成就。归属校验在服务层走 ChildScope，越界 child_id 与不存在回同一句话。
+message ChildAchievementRequest {
+  string child_id = 1;
+}
+
+message ChildAchievementReply {
+  AchievementState achievement = 1;
+}
+
+// 远程即时控制：家长给某个孩子下命令，服务端经共享 SSE 通道推到设备。
+// kind 是命令类型（v1 只有 "quiz-now"=立即答题）；设备离线时命令落库排队，重连补发。
+message RemoteCommandRequest {
+  string child_id = 1;
+  string kind = 2;
+}
+
+message RemoteCommandReply {
+  string command_id = 1;
+  // true=已推到设备的活连接；false=设备离线，命令已排队等重连。
+  bool delivered = 2;
 }
 
 // 用量上报：时长与答题数。event_id 由客户端生成，服务端按它去重。
@@ -386,6 +429,18 @@ message OfflineChildItem {
 message ListAlertsReply {
   repeated GateAlertItem alerts = 1;
   repeated OfflineChildItem offline_children = 2;
+  // 未读＝比家长上次打开提示页更新的那几条。角标读它，不读 alerts+offline 的总数：
+  // 读过的一百多条不该永远红着，否则家长学会的不是"去看提示"而是"无视角标"。
+  int32 unread = 3;
+}
+
+// 打开提示页即已读。已读时刻落在服务端（parent_account.alerts_read_at_ms），
+// 换设备、开新标签页都认同一个时刻；应答把它回给客户端，让角标当拍就灭，不用等下一轮轮询。
+message MarkAlertsReadRequest {
+}
+
+message MarkAlertsReadReply {
+  int64 read_at_ms = 1;
 }
 
 // 远程排查用的那一屏：按设备翻诊断流水。
@@ -527,6 +582,22 @@ message ListBuiltinBankReply {
   repeated BankQuestion questions = 1;
 }
 
+// 家长把看中的内置题抄进某个孩子的私有题库：抄进来就是他的题，默认已核对、可驳回可删。
+// 浏览页只读不等于内置题用不上——"不录题即兜底"是默认行为，这一条是家长主动挑题的那扇门。
+// 年级跟着孩子走（和手打上传同一个规矩）：抽题按孩子当前年级捞，抄一道别的年级的题进去
+// 会永远躺在库里抽不到，那比不抄更糟。
+message CopyBuiltinRequest {
+  string child_id = 1;
+  repeated string question_ids = 2;
+}
+
+message CopyBuiltinReply {
+  int32 copied = 1;
+  // 孩子库里已有同题干的题就不抄第二份：同一道题在孩子面前出两遍，家长只会以为是 bug。
+  int32 skipped = 2;
+  repeated string errors = 3;
+}
+
 // ── 拍照识题（家长拍一张卷子，识别引擎出草稿）──────────────
 //
 // 三条边界写在这里，代码别绕过：
@@ -644,6 +715,9 @@ message RegisterRequest {
   string username = 2;
   string password = 3;
   string display_name = 4;
+  // 选填的找回邮箱。留空就走上不了这条路：口令忘了只能找管理员重置，
+  // 这一条在注册页和找回密码页都写得很明白，不做"你以为能找回其实不能"。
+  string email = 5;
 }
 
 // 注册成功直接发令牌：省一次口令往返，也避免"注册完了还得再登一次"这种半成品流程。
@@ -661,9 +735,46 @@ message ChangePasswordReply {
   string parent_token = 1;
 }
 
+// 改昵称。昵称是家长自己给自己起的称呼——顶栏、头像旁边、下拉菜单里到处都在显示它，
+// 注册时填下之后就再也改不了的话，"爸爸"这种种子值就只能一辈子挂着。
+// 判据和注册那一栏共用同一条（见 ParentService.requireUsableDisplayName）。
+message SetDisplayNameRequest {
+  string display_name = 1;
+}
+
+// 回的是服务端 trim 之后真正存下来的那一个：界面拿它覆盖自己那份，不显示用户多敲的空格。
+message SetDisplayNameReply {
+  string display_name = 1;
+}
+
+// 找回密码第一步：按邮箱要一枚验证码。这是匿名接口，所以应答里只有一句人话——
+// "这个邮箱有没有对应账号"从应答里读不出来，否则公网映射上就多了一个按邮箱查账号的口子。
+message RequestPasswordResetRequest {
+  string email = 1;
+}
+
+message RequestPasswordResetReply {
+  string message = 1;
+  // 下一封最早多少秒之后能发。界面拿它禁用按钮，不自己猜一个数。
+  int32 resend_after_seconds = 2;
+}
+
+// 找回密码第二步：验证码 + 新口令一起交，对上了才改口令并作废旧令牌。
+message ConfirmPasswordResetRequest {
+  string email = 1;
+  string code = 2;
+  string new_password = 3;
+}
+
+message ConfirmPasswordResetReply {
+  string message = 1;
+}
+
 // 孩子的虚拟形象。这里只存"选了哪一只"：图片资源打包在各端本地，
 // 服务端既不下发二进制也不下发 URL——多一个 URL 就多一个可被替换的下载面。
-// 七档是同一只狐狸、只有围巾变色，所以新增一档的代价是一张小图，不是一套新美术。
+// 七档是同一只狐狸的七种拟人化造型（男孩/女孩的发型、帽子、眼镜、蝴蝶结等细节 + 围巾配色）：
+// 切层母版一份，细节层按档叠加，所以新增一档的代价是一组小图层，不是一套新美术。
+// 名字/性别/个性的权威目录在服务端 Avatars.java，web 的 avatars.ts 对着它写，导出脚本机械核对。
 enum AvatarId {
   AVATAR_UNSPECIFIED = 0;
   FOX_AMBER = 1;
@@ -725,6 +836,102 @@ message CreateInviteRequest {
 
 message CreateInviteReply {
   string code = 1;
+}
+
+// ── 家长之间的分享邀请（发码家长计积分）────────────────────
+//
+// 和管理员发码同一张 invite_code 表，只是 created_by 落家长账号；
+// 谁拿这枚码注册成功，发码的家长记一笔积分（point_event 流水，只加不改）。
+// 分享链接由前端拿 code 拼当前地址：服务端猜不出家长此刻是从局域网还是从公网进来的。
+message CreateShareInviteRequest {
+}
+
+message CreateShareInviteReply {
+  string code = 1;
+  // 发码家长此刻的积分总分，跟着一起回：点完「生成分享链接」他想在同一屏看到"我现在有多少分"。
+  int32 points = 2;
+}
+
+message MyInviteSummary {
+  string code = 1;
+  bool used = 2;
+  // 空串＝还没被用掉。只回用码人的昵称，不回账号名：分享者不该知道被邀请人登录用什么。
+  string used_by_display_name = 3;
+  int64 created_at_ms = 4;
+}
+
+message ListMyInvitesRequest {
+}
+
+// 积分明细的一行。积分本来就是一本只追加的流水（point_event），这里把它原样端上来：
+// 邀请页单独成页之后，那个总数必须能回答"这些分是从哪来的"，否则它只是一个不许问的数字。
+message PointEventItem {
+  string reason = 1;
+  // 有符号：加分是正数，将来若有扣分就是负数，界面按正负分两种颜色。
+  int32 delta = 2;
+  // 关联的那枚注册码；没有就空串。
+  string ref_code = 3;
+  int64 created_at_ms = 4;
+}
+
+message ListMyInvitesReply {
+  repeated MyInviteSummary invites = 1;
+  int32 points = 2;
+  // 每成功邀请一位记多少分。跟着应答走，界面不自己抄一个数（和 offline_after_ms 一个道理）：
+  // 服务端改了分值，宣传文案不会留在旧数上。
+  int32 points_per_invite = 3;
+  // 最近若干条，按时间倒序。上限由服务端定，界面不许假设"这就是全部"。
+  repeated PointEventItem points_history = 4;
+}
+
+// 顶栏那颗头像和它的下拉菜单读这一份：昵称、积分、头像来自同一次快照。
+// 积分不另开接口——它和头像摆在同一张菜单里，分两次取会出现"头像换了、分还是旧的"。
+message GetProfileRequest {
+}
+
+message GetProfileReply {
+  string display_name = 1;
+  int32 points = 2;
+  // 内置默认头像的编号，注册那一刻就发一个，所以这一格永远有值；
+  // avatar_data 非空时以自定义头像为准，preset 仍留着——「恢复默认」要回到它。
+  int32 avatar_preset = 3;
+  // 空串＝没上传过自定义头像。mime 只可能是 png/jpeg/webp 之一，服务端白名单把关。
+  string avatar_mime = 4;
+  bytes avatar_data = 5;
+  // 昵称最长几个字。跟着应答走，界面不自己抄一个数：改判据时输入框的限制会真的跟着变。
+  int32 display_name_max = 6;
+  // 绑定的找回邮箱。空串＝没绑，找回密码这条路走不了，界面要把这一件事说清楚。
+  string email = 7;
+}
+
+// 绑定/修改找回邮箱。改邮箱不会自动改口令，也不会踢掉已登录的会话——
+// 它只决定"下一步验证码发到哪儿"。
+message SetEmailRequest {
+  string email = 1;
+}
+
+message SetEmailReply {
+  string email = 1;
+}
+
+// 上传自定义头像。前端先把图缩到 256×256 再传，服务端再按白名单和上限收一次：
+// 客户端说的话不算数，边界上的校验只能落在服务端。
+message SetAvatarRequest {
+  string mime = 1;
+  bytes data = 2;
+}
+
+message SetAvatarReply {
+  string avatar_mime = 1;
+  bytes avatar_data = 2;
+}
+
+// 恢复默认：清掉自定义字节，preset 不动。能上传就要能撤掉，共用机器上尤其如此。
+message ClearAvatarRequest {
+}
+
+message ClearAvatarReply {
+  int32 avatar_preset = 1;
 }
 
 message InviteSummary {
