@@ -86,7 +86,9 @@ struct HomeView: View {
                 // 编号认不出来时它自己整块不画、不留空位，和"还没有形象"时长得一样。
                 AvatarRigView(avatarId: model.state.avatarId ?? 0,
                               playState: model.currentPlayState(),
-                              size: Theme.Metric.avatarHero)
+                              size: Theme.Metric.avatarHero,
+                              playsOnTap: true,
+                              greetsOnAppear: true)
                 Circle()
                     .fill(tone == .ok ? Theme.Palette.ok : (tone == .warn ? Theme.Palette.warn : Theme.Palette.danger))
                     .frame(width: Theme.Metric.toneDot, height: Theme.Metric.toneDot)

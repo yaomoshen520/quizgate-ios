@@ -24,6 +24,13 @@ struct AvatarRigView: View {
     var size: CGFloat
     /// 点一下演一次"走出去再回来"。首页那格是 44pt，点了没反应比不响应更让人怀疑坏了。
     var playsOnTap: Bool = false
+    /// 这一屏一出现就先演一次，不用孩子先点。
+    ///
+    /// 只有 iOS 有这一格：iOS 拿不到前台 App，也就没有 Android 那句「正在玩「XXX」」当引子，
+    /// 首页第一段少了会说话的那一格；用一次开场互动补上"它是活的"这个印象。
+    /// 回到前台也算一次打开——`onAppear` 那时不会再触发（视图一直挂着），所以两个入口都要接。
+    /// 撞车不要紧：`playInteraction()` 在上一场没演完时直接返回 false，不会把动作截断重来。
+    var greetsOnAppear: Bool = false
 
     @StateObject private var clock = FoxClock()
     @Environment(\.scenePhase) private var scenePhase
@@ -100,12 +107,19 @@ struct AvatarRigView: View {
             guard playsOnTap else { return }
             clock.playInteraction()
         }
-        .onAppear { clock.start() }
+        .onAppear { clock.start(); greet() }
         .onDisappear { clock.stop() }
         // 别只靠 onDisappear：App 退到后台时视图仍然挂着，那一趟 ticker 会一直空转。
         .onChange(of: scenePhase) { phase in
-            if phase == .active { clock.start() } else { clock.stop() }
+            if phase == .active { clock.start(); greet() } else { clock.stop() }
         }
+    }
+
+    /// 开场那一次互动。必须在 `clock.start()` 之后叫：节拍器没跑起来时
+    /// `playInteraction()` 会当成"这一刻不该演"直接返回 false，狐狸就永远不动。
+    private func greet() {
+        guard greetsOnAppear else { return }
+        clock.playInteraction()
     }
 
     private var opacity: Double {
