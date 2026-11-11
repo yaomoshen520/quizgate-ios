@@ -193,6 +193,10 @@ jobs:
     needs: build-and-test
     runs-on: macos-15
     timeout-minutes: 40
+    # 只为了给下面那步滚动 release：Actions 的 artifact 下载端点要登录态，
+    # 装包/拉包的人就得经手一次令牌；release 资产是匿名可下的。
+    permissions:
+      contents: write
 
     steps:
       - uses: actions/checkout@v4
@@ -405,3 +409,32 @@ jobs:
           path: QuizGate.ipa
           retention-days: 30
           if-no-files-found: error
+
+      - name: Publish rolling release (anonymous download)
+        # 固定 tag `ios-build` 的滚动 release：每轮把 ipa 换成最新那枚，URL 永远是同一个。
+        # 为什么不用上面的 artifact：artifact 的下载端点要登录态（401），拉包的人就得把自己的
+        # 令牌经手给拉包脚本；release 资产在公开仓上匿名可下，谁都不碰凭据。
+        # 不挪 tag（只用 --target 记本轮提交）：挪 tag 要 git push，那一步又得用到凭据。
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          TAG=ios-build
+          gh release view "$TAG" >/dev/null 2>&1 \
+            || gh release create "$TAG" --target "$GITHUB_SHA" \
+                 --title "iOS 最新构建（滚动）" \
+                 --notes "永远指向最近一轮构建的 ipa，供真机侧载与自动化拉取。只保留一枚。"
+          gh release upload "$TAG" QuizGate.ipa --clobber
+          gh release edit "$TAG" --target "$GITHUB_SHA" --latest
+
+          URL="https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/QuizGate.ipa"
+          echo "===== 匿名下载验证（不带任何 Authorization）====="
+          # 302 才算通：404 = release 或资产名不对，401/403 = 仓库不知什么时候被改成私有。
+          code=$(curl -so /dev/null -w '%{http_code}' -I "$URL")
+          echo "HTTP $code  $URL"
+          [ "$code" = "302" ] || { echo "匿名下载没通过（期望 302，拿到 $code）" >&2; exit 1; }
+          sha256=$(shasum -a 256 QuizGate.ipa | cut -d' ' -f1)
+          bytes=$(wc -c < QuizGate.ipa | tr -d ' ')
+          # 这两行是判据：拉包的一方拿 sha256 比对自己手里的字节，才知道是不是本轮那枚。
+          echo "IPA_SHA256=$sha256"
+          echo "IPA_BYTES=$bytes"
