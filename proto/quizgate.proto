@@ -170,6 +170,8 @@ message AchievementState {
   int32 points_to_next = 7;
   // 已解锁徽章的标题，给孩子/家长直接展示。
   repeated string badges = 8;
+  // 最新解锁徽章的编号：形象胸前挂这枚勋章（素材按编号加载）。空＝还没有徽章。
+  string latest_badge = 9;
 }
 
 // 答错时只回解析，不回正确项下标——闸门规则是"再做一道同类题"，不是"告诉你答案"。
@@ -381,6 +383,14 @@ message ChildSummary {
   // play_state 是什么时候报上来的。前端"超过 3 分钟没再上报就停住不动"要靠它算，
   // 不能拿 last_heartbeat_ms 顶替——心跳活着不代表状态是新的。
   int64 observed_at_ms = 12;
+  // 答题养成摘要：概览页一眼看到等级章和今日答对，不用钻进报表。
+  int32 achievement_level = 13;
+  string achievement_level_title = 14;
+  int32 achievement_points = 15;
+  // 当天 0 点（家长时区）起算的答对题数，来自 question_ask 逐题判分。
+  int32 today_correct = 16;
+  // 最新解锁的徽章编号：形象胸前挂这枚勋章。空串＝还没有徽章。
+  string latest_badge = 17;
 }
 
 message LoginReply {

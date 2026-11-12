@@ -34,13 +34,18 @@ struct AvatarRigView: View {
     /// 答对/答错时由宿主置 true，触发庆祝/挠头（变成 true 的那一刻演一次）。
     var celebrate: Bool = false
     var scratch: Bool = false
+    /// 答题养成：等级 >=3 头顶戴皇冠，胸前挂最新解锁的勋章（编号）。
+    var achievementLevel: Int = 0
+    var achievementBadge: String? = nil
+    /// 宿主置 true 的那一刻演一次佩戴动画（勋章飞入、皇冠落下）。
+    var equip: Bool = false
 
     @StateObject private var clock = FoxClock()
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         if let rig = FoxRig.load(), let scarf = rig.scarf(for: avatarId) {
-            canvas(rig: rig, scarf: scarf, frame: currentFrame())
+            canvas(rig: rig, scarf: scarf, frame: currentFrame(), equipProgress: clock.equipProgress ?? 1)
         }
     }
 
@@ -78,7 +83,7 @@ struct AvatarRigView: View {
         let type: AvatarPose.Interaction
     }
 
-    private func canvas(rig: FoxRig, scarf: String, frame: Frame) -> some View {
+    private func canvas(rig: FoxRig, scarf: String, frame: Frame, equipProgress: Float) -> some View {
         let pose = frame.pose
         return Canvas { context, canvasSize in
             let box = min(canvasSize.width, canvasSize.height)
@@ -108,6 +113,19 @@ struct AvatarRigView: View {
                 // 位图解出来多大不重要，一律铺满这个方框；支点已经折算过了。
                 ctx.draw(image, in: CGRect(x: 0, y: 0, width: box, height: box))
             }
+            // 成就佩戴：皇冠戴头顶、勋章挂胸前，叠在骨骼层之上。坐标与安卓/web 一致（512 画布）。
+            let alpha = Double(min(1, equipProgress / 0.3))
+            if achievementLevel >= 3, let crown = FoxRig.achievementImage("achievement_crown") {
+                let dy = equipLerp(equipProgress, -140, 10, 0)
+                let sc = equipLerp(equipProgress, 0.6, 1.1, 1)
+                drawAccessory(context, image: crown, x: 146, y: 14, w: 220, fit: fit, dy: dy, scale: sc, rot: 0, alpha: alpha)
+            }
+            if let badge = achievementBadge, let medal = FoxRig.achievementImage("achievement_\(badge)") {
+                let dy = equipLerp(equipProgress, 140, -12, 0)
+                let sc = equipLerp(equipProgress, 0.2, 1.18, 1)
+                let rot = equipLerp(equipProgress, -180, 8, 0)
+                drawAccessory(context, image: medal, x: 196, y: 298, w: 120, fit: fit, dy: dy, scale: sc, rot: rot, alpha: alpha)
+            }
         }
         .frame(width: size, height: size)
         // 压暗挂在整体上、只压一次：逐层各压一次会在头身交界留出一条深浅接缝。
@@ -132,6 +150,26 @@ struct AvatarRigView: View {
         // 答对庆祝、答错挠头：宿主把对应标志置 true 的那一刻演一次。
         .onChange(of: celebrate) { on in if on { clock.playInteraction(.celebrate) } }
         .onChange(of: scratch) { on in if on { clock.playInteraction(.scratch) } }
+        .onChange(of: equip) { on in if on { clock.playEquip() } }
+    }
+
+    /// 画一枚勋章/皇冠：中心定位 + 佩戴动画的位移/缩放/旋转/透明度。
+    private func drawAccessory(_ context: GraphicsContext, image: Image, x: CGFloat, y: CGFloat, w: CGFloat, fit: CGFloat, dy: CGFloat, scale: CGFloat, rot: Double, alpha: Double) {
+        let size = w * fit
+        let cx = (x + w / 2) * fit
+        let cy = (y + w / 2) * fit + dy * fit
+        var ctx = context
+        ctx.translateBy(x: cx, y: cy)
+        if rot != 0 { ctx.rotate(by: .degrees(rot)) }
+        ctx.scaleBy(x: scale, y: scale)
+        ctx.opacity = alpha
+        ctx.draw(image, in: CGRect(x: -size / 2, y: -size / 2, width: size, height: size))
+    }
+
+    /// 佩戴动画三段插值：起点 → 过冲 → 落稳。
+    private func equipLerp(_ p: Float, _ start: CGFloat, _ over: CGFloat, _ end: CGFloat) -> CGFloat {
+        let pp = CGFloat(p)
+        return pp < 0.55 ? start + (over - start) * (pp / 0.55) : over + (end - over) * ((pp - 0.55) / 0.45)
     }
 
     /// 开场那一次互动。必须在 `clock.start()` 之后叫：节拍器没跑起来时
@@ -162,19 +200,29 @@ final class FoxClock: ObservableObject {
     static let tickMs: Int64 = 300
     /// 互动期间多久算一次：孩子点一下才演的那两秒多，手臂 1.1 秒一圈，按帧才不跳格。
     static let frameMs: Int64 = 16
+    /// 佩戴动画时长：勋章飞入挂稳、皇冠落下戴稳。
+    static let equipMs: Int64 = 1300
 
     @Published private(set) var uptimeMs: Int64 = FoxClock.now()
     @Published private(set) var interactionEndsAtMs: Int64 = 0
     @Published private(set) var interactionType: AvatarPose.Interaction = .walk
+    @Published private(set) var equipEndsAtMs: Int64 = 0
 
     private var task: Task<Void, Never>?
 
     var interactionRunning: Bool { uptimeMs < interactionEndsAtMs }
+    var equipRunning: Bool { uptimeMs < equipEndsAtMs }
 
     /// 互动那一趟走到哪了；不在演的时候是 nil，调用方据此回到状态循环。
     var interactionProgress: Float? {
         guard interactionRunning else { return nil }
         return Float(AvatarPose.interactionMs - (interactionEndsAtMs - uptimeMs)) / Float(AvatarPose.interactionMs)
+    }
+
+    /// 佩戴动画进度；不在演的时候是 nil（调用方按落稳态画）。
+    var equipProgress: Float? {
+        guard equipRunning else { return nil }
+        return Float(Self.equipMs - (equipEndsAtMs - uptimeMs)) / Float(Self.equipMs)
     }
 
     func start() {
@@ -184,7 +232,7 @@ final class FoxClock: ObservableObject {
             while !Task.isCancelled {
                 guard let self else { return }
                 self.uptimeMs = Self.now()
-                let interval = self.interactionRunning ? Self.frameMs : Self.tickMs
+                let interval = (self.interactionRunning || self.equipRunning) ? Self.frameMs : Self.tickMs
                 try? await Task.sleep(nanoseconds: UInt64(interval) * 1_000_000)
             }
         }
@@ -196,6 +244,7 @@ final class FoxClock: ObservableObject {
         // 界面不可见时不许停在"走到一半"的位置：回来时它该坐在原来的格子里。
         interactionEndsAtMs = 0
         interactionType = .walk
+        equipEndsAtMs = 0
     }
 
     /// 演一次互动：走路（被点）、庆祝（答对）、挠头（答错）。返回 false 表示这一刻不该演。
@@ -206,6 +255,13 @@ final class FoxClock: ObservableObject {
         interactionEndsAtMs = Self.now() + AvatarPose.interactionMs
         uptimeMs = Self.now()
         return true
+    }
+
+    /// 演一次佩戴动画：孩子刚解锁徽章时调。
+    func playEquip() {
+        guard task != nil else { return }
+        equipEndsAtMs = Self.now() + Self.equipMs
+        uptimeMs = Self.now()
     }
 
     private static func now() -> Int64 {

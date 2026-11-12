@@ -72,6 +72,15 @@ final class FoxRig {
         return scarves.indices.contains(avatarNumber - 1) ? scarves[avatarNumber - 1] : nil
     }
 
+    /// 成就勋章/皇冠素材（achievement_*，与几何表无关，按名字单独加载、缓存）。
+    private static var achievementCache: [String: Image] = [:]
+    static func achievementImage(_ name: String) -> Image? {
+        if let hit = achievementCache[name] { return hit }
+        guard let image = decode(name) else { return nil }
+        achievementCache[name] = image
+        return image
+    }
+
     private struct Table: Decodable {
         struct LayerRow: Decodable {
             let name: String

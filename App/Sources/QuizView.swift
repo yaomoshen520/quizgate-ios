@@ -7,6 +7,7 @@ struct QuizView: View {
     @EnvironmentObject var model: AppModel
     @Environment(\.dismiss) private var dismiss
     @Environment(\.horizontalSizeClass) private var horizontalSize
+    @State private var showEnlarge = false
 
     /// 和首页同一个判据：宽屏上题干和选项都收进限宽列，别拉成横幅。
     private var wide: Bool { horizontalSize == .regular }
@@ -21,6 +22,35 @@ struct QuizView: View {
                 successLayer
             }
         }
+        .sheet(isPresented: $showEnlarge) { enlargeView }
+    }
+
+    /// 放大看勋章：大形象 + 等级积分徽章墙，孩子凑近看自己挣的成就。
+    private var enlargeView: some View {
+        VStack(spacing: Theme.Space.s5) {
+            AvatarRigView(avatarId: model.state.avatarId ?? 0,
+                          playState: .quiz,
+                          size: 280,
+                          playsOnTap: true,
+                          achievementLevel: Int(model.achievement?.level ?? 0),
+                          achievementBadge: model.achievement?.latestBadge)
+            if let ach = model.achievement {
+                Text("Lv\(ach.level) \(ach.levelTitle) · \(ach.points) 积分")
+                    .font(.system(size: Theme.Text.body, weight: .bold))
+                    .foregroundStyle(Theme.Palette.ink)
+                Text("徽章：" + (ach.badges.isEmpty ? "还没有，答对第一题点亮" : ach.badges.joined(separator: "、")))
+                    .font(.system(size: Theme.Text.caption))
+                    .foregroundStyle(Theme.Palette.inkSoft)
+                    .multilineTextAlignment(.center)
+            } else {
+                Text("答对攒积分，升级戴皇冠、解锁勋章")
+                    .font(.system(size: Theme.Text.body))
+                    .foregroundStyle(Theme.Palette.inkSoft)
+            }
+            Button("关闭") { showEnlarge = false }
+                .buttonStyle(PrimaryButtonStyle())
+        }
+        .padding(Theme.Space.s6)
     }
 
     /// 选项列数。宽屏两列、窄屏一列，和首页卡片同一个道理：
@@ -40,7 +70,10 @@ struct QuizView: View {
                               size: Theme.Metric.avatarQuiz,
                               playsOnTap: true,
                               celebrate: model.answeredCorrect,
-                              scratch: model.explanation != nil && !model.answeredCorrect)
+                              scratch: model.explanation != nil && !model.answeredCorrect,
+                              achievementLevel: Int(model.achievement?.level ?? 0),
+                              achievementBadge: model.achievement?.latestBadge,
+                              equip: !model.newBadges.isEmpty)
                 HStack {
                     // 三枚标签在窄屏上会挤到「关闭」那颗按钮 off-screen，所以标签可截断、
                     // 按钮不可压缩：知识点名字长是常态，关闭入口消失了孩子就退不出这一屏。
@@ -151,6 +184,13 @@ struct QuizView: View {
                     }
                 }
             }
+            Button {
+                showEnlarge = true
+            } label: {
+                Text("放大看勋章")
+                    .frame(maxWidth: .infinity, minHeight: Theme.Metric.controlHeight)
+            }
+            .buttonStyle(PrimaryButtonStyle())
             Button {
                 model.question = nil
                 dismiss()
