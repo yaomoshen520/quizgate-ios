@@ -443,6 +443,8 @@ final class AppModel: ObservableObject {
             applyServerTime(reply.serverTimeMs)
             state.deviceBound = reply.deviceBound
             applyAvatar(reply.avatarID.rawValue)
+            // 成就快照随心跳缓存：形象持久佩戴皇冠勋章，不必等答对那一跳（与安卓一致）。
+            if reply.hasAchievement { achievement = reply.achievement }
             if reply.ruleChanged {
                 state.rule = mapRule(reply.rule)
                 reconfigureMonitoring()

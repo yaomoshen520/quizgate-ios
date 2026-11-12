@@ -118,7 +118,8 @@ struct AvatarRigView: View {
             if achievementLevel >= 3, let crown = FoxRig.achievementImage("achievement_crown") {
                 let dy = equipLerp(equipProgress, -140, 10, 0)
                 let sc = equipLerp(equipProgress, 0.6, 1.1, 1)
-                drawAccessory(context, image: crown, x: 146, y: 14, w: 220, fit: fit, dy: dy, scale: sc, rot: 0, alpha: alpha)
+                // 皇冠缩小上移坐头顶，避免压住眼睛（与 web/安卓同一坐标）。
+                drawAccessory(context, image: crown, x: 181, y: 20, w: 150, fit: fit, dy: dy, scale: sc, rot: 0, alpha: alpha)
             }
             if let badge = achievementBadge, let medal = FoxRig.achievementImage("achievement_\(badge)") {
                 let dy = equipLerp(equipProgress, 140, -12, 0)

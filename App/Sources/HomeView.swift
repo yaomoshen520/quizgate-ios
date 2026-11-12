@@ -88,7 +88,9 @@ struct HomeView: View {
                               playState: model.currentPlayState(),
                               size: Theme.Metric.avatarHero,
                               playsOnTap: true,
-                              greetsOnAppear: true)
+                              greetsOnAppear: true,
+                              achievementLevel: Int(model.achievement?.level ?? 0),
+                              achievementBadge: model.achievement?.latestBadge)
                 Circle()
                     .fill(tone == .ok ? Theme.Palette.ok : (tone == .warn ? Theme.Palette.warn : Theme.Palette.danger))
                     .frame(width: Theme.Metric.toneDot, height: Theme.Metric.toneDot)
