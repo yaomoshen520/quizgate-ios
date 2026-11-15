@@ -8,6 +8,7 @@ struct QuizView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.horizontalSizeClass) private var horizontalSize
     @State private var showEnlarge = false
+    @State private var answerText = ""
 
     /// 和首页同一个判据：宽屏上题干和选项都收进限宽列，别拉成横幅。
     private var wide: Bool { horizontalSize == .regular }
@@ -60,6 +61,33 @@ struct QuizView: View {
         return [GridItem(.flexible(), spacing: Theme.Space.s4)]
     }
 
+    /// 主观题：自由文本输入 + 提交，服务端 AI 批改。参考答案孩子看不到，评语答完才回。
+    private var subjectiveInput: some View {
+        VStack(alignment: .leading, spacing: Theme.Space.s3) {
+            TextEditor(text: $answerText)
+                .font(.system(size: Theme.Text.option))
+                .foregroundStyle(Theme.Palette.ink)
+                .frame(minHeight: 96)
+                .padding(Theme.Space.s3)
+                .background(Theme.Palette.card)
+                .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.control))
+                .overlay(
+                    RoundedRectangle(cornerRadius: Theme.Radius.control)
+                        .strokeBorder(Theme.Palette.optionStroke, lineWidth: 1)
+                )
+                .disabled(model.busy || model.explanation != nil)
+            Button {
+                Task { await model.submitAnswer(text: answerText) }
+            } label: {
+                Text("提交答案")
+                    .frame(maxWidth: .infinity, minHeight: Theme.Metric.controlHeight)
+            }
+            .buttonStyle(PrimaryButtonStyle())
+            .disabled(model.busy || model.explanation != nil
+                      || answerText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        }
+    }
+
     private func content(_ question: Quizgate_Question) -> some View {
         ScrollView {
             VStack(alignment: .leading, spacing: Theme.Space.s4) {
@@ -102,12 +130,16 @@ struct QuizView: View {
                     .foregroundStyle(Theme.Palette.ink)
                     .fixedSize(horizontal: false, vertical: true)
 
-                LazyVGrid(columns: optionColumns, alignment: .leading, spacing: Theme.Space.s4) {
-                    ForEach(Array(question.options.enumerated()), id: \.offset) { index, option in
-                        OptionButton(text: option, chosen: model.explanation != nil) {
-                            Task { await model.submitAnswer(index: index) }
+                if question.type == .subjective {
+                    subjectiveInput
+                } else {
+                    LazyVGrid(columns: optionColumns, alignment: .leading, spacing: Theme.Space.s4) {
+                        ForEach(Array(question.options.enumerated()), id: \.offset) { index, option in
+                            OptionButton(text: option, chosen: model.explanation != nil) {
+                                Task { await model.submitAnswer(index: index) }
+                            }
+                            .disabled(model.busy || model.explanation != nil)
                         }
-                        .disabled(model.busy || model.explanation != nil)
                     }
                 }
 
@@ -150,6 +182,7 @@ struct QuizView: View {
             }
             .padding(Theme.Space.s4)
             .readableColumn()
+            .onChange(of: model.question?.questionID) { _ in answerText = "" }
         }
     }
 

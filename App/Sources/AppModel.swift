@@ -568,12 +568,27 @@ final class AppModel: ObservableObject {
     }
 
     func submitAnswer(index: Int) async {
-        guard let question, let token = state.deviceToken, let api else { return }
-        busy = true
-        defer { busy = false }
+        guard let question else { return }
         var request = Quizgate_AnswerRequest()
         request.questionID = question.questionID
         request.selectedIndex = Int32(index)
+        await submit(request: request, picked: String(index))
+    }
+
+    /// 主观题文本作答：服务端 AI 批改，参考答案不下发。判分闭环与客观题共用 submit。
+    func submitAnswer(text: String) async {
+        guard let question,
+              !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        var request = Quizgate_AnswerRequest()
+        request.questionID = question.questionID
+        request.answerText = text
+        await submit(request: request, picked: "text")
+    }
+
+    private func submit(request: Quizgate_AnswerRequest, picked: String) async {
+        guard let question, let token = state.deviceToken, let api else { return }
+        busy = true
+        defer { busy = false }
         do {
             let reply: Quizgate_AnswerReply = try await api.post(
                 "answer", token: token, request: request, reply: Quizgate_AnswerReply.self
@@ -602,10 +617,10 @@ final class AppModel: ObservableObject {
                 explanation = reply.explanation
             }
             persist()
-            // 记「第几个选项、对不对、答完之后盾牌还在不在」：
+            // 记「第几个选项/文本、对不对、答完之后盾牌还在不在」：
             // 「答对了但屏幕还是拦着」这类问题只有对上这三段时间线才查得下去。
             DiagLog.record("quiz",
-                           "判分 id=" + question.questionID + " picked=" + String(index)
+                           "判分 id=" + question.questionID + " picked=" + picked
                                + " correct=" + String(reply.correct)
                                + " shieldApplied=" + String(state.shieldApplied)
                                + " unlockUntil=" + String(state.ledger.unlockUntilMs ?? -1),

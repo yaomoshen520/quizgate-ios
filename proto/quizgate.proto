@@ -14,6 +14,13 @@ enum Subject {
   ENGLISH = 3;
 }
 
+// 题型。0＝客观选择题（默认，存量题都是这一档，服务端比下标）；
+// 1＝主观题（孩子答自由文本，服务端用 AI 对照参考答案/评分标准批改）。
+enum QuestionType {
+  OBJECTIVE = 0;
+  SUBJECTIVE = 1;
+}
+
 // ── 公共结构 ──────────────────────────────────────────────
 
 // 下发给客户端的题目。注意：不含正确答案，判分在服务端完成。
@@ -24,6 +31,8 @@ message Question {
   string knowledge_point = 4;
   string stem = 5;
   repeated string options = 6;
+  // 题型：主观题客户端渲染文本输入框而非选项。参考答案/评分标准不下发（判分在服务端）。
+  QuestionType type = 7;
 }
 
 // 闸门规则快照，app A 拉到本地后驱动计时与拦截。
@@ -155,6 +164,8 @@ message NextQuestionReply {
 message AnswerRequest {
   string question_id = 1;
   int32 selected_index = 2;
+  // 主观题孩子的自由文本作答；客观题留空，仍走 selected_index。
+  string answer_text = 3;
 }
 
 // 答题养成：孩子的积分/连对/等级/徽章。服务端在判分那一刻维护，答对回包即时带回，
@@ -544,6 +555,10 @@ message QuestionDraft {
   repeated string options = 5;
   int32 correct_index = 6;
   string explanation = 7;
+  // 主观题：type=SUBJECTIVE 时必填 reference_answer，rubric 可选；options/correct_index 忽略。
+  QuestionType type = 8;
+  string reference_answer = 9;
+  string rubric = 10;
 }
 
 // 家长上传自己的题库；bank_name 为空则并入该孩子的私有题库。
@@ -576,6 +591,10 @@ message BankQuestion {
   string bank_name = 9;
   // false 表示这道题还没人能担保它的正确答案，闸门不会抽到它，只在家长的核对清单里待着。
   bool verified = 10;
+  // 主观题字段：家长回显用，孩子端的 Question 消息不带这些。
+  QuestionType type = 11;
+  string reference_answer = 12;
+  string rubric = 13;
 }
 
 message ListBankReply {
