@@ -374,6 +374,32 @@ jobs:
             | grep -qx "com.apple.networkextension.packet-tunnel" \
             || { echo "tunnel 的扩展点标识符不是 com.apple.networkextension.packet-tunnel" >&2; exit 1; }
 
+          # 两枚放行出口必须**各自**在宿主和 tunnel 的成品 plist 里都读得到、而且是展开后的地址。
+          # 这一格是本轮新栽的位置：project.yml 给主 App 加了 DNS 出口、给 tunnel 漏了一枚，
+          # 编译和签名全都绿，设备上却是「扩展算不出出口 → 拒绝起隧道」，
+          # 而那一句在远程日志里和「权限没落地」长得一模一样。
+          # 读产物而不是读 project.yml：只有 Xcode 展开过一遍之后，$(…) 没定义这件事才暴露出来。
+          for pl in "$APP/Info.plist" "$TUNNEL/Info.plist"; do
+            for key in QUIZGATE_TUNNEL_ALLOW_IP QUIZGATE_TUNNEL_ALLOW_DNS; do
+              got=$(plutil -extract "$key" raw -o - "$pl" 2>/dev/null) \
+                || { echo "$pl 里丢了 $key：这一侧永远算不出放行出口，隧道会被自己拒掉" >&2; exit 1; }
+              case "$got" in
+                *'$('*|'') { echo "$pl 的 $key 没展开或为空，读到的是 [$got]" >&2; exit 1; } ;;
+              esac
+              # 形状按 VpnPlan.dnsExit 认的那一种来查（逗号后可有空格）：CI 比代码严一档的话，
+              # 将来一个空格的改动会编成"配置没问题、判定却通不过"那种假红。
+              # 八位组越界这一格 CI 不查，那是 Kit 单测里的反例（isIPv4Literal）。
+              echo "$got" | grep -Eq '^([0-9]{1,3}\.){3}[0-9]{1,3}(,[[:space:]]*([0-9]{1,3}\.){3}[0-9]{1,3})*$' \
+                || { echo "$pl 的 $key 不是点分十进制的形状：[$got]" >&2; exit 1; }
+              echo "放行出口 $key = $got（$(basename "$pl")）"
+            done
+          done
+          # 阳性对照：同一套取法查一枚不存在的键必须失败。少了这一句，上面那串断言可能是假绿 ——
+          # 而"配置没进包"和"断言根本没在查"这两件事，在这份日志里长得一模一样。
+          if plutil -extract QUIZGATE_TUNNEL_ALLOW_NOPE raw -o - "$TUNNEL/Info.plist" 2>/dev/null; then
+            echo "对照失败：不存在的键也读得出来，上面那串放行出口断言不可信" >&2; exit 1
+          fi
+
           # 架构也得当场点验：巨魔装一个只有 x86_64 切片的包，报错会写成让人误以为是签名问题的样子。
           echo "--- 宿主可执行文件架构 ---"
           lipo -archs "$APP/QuizGate"

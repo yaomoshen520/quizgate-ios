@@ -16,7 +16,12 @@ open QuizGate.xcodeproj
 `project.yml` 入仓，`*.xcodeproj/` 不入仓 —— pbxproj 是二进制级的合并灾难源。
 
 后端地址和 App Group 只在 `project.yml` 顶部的 `settings.base` 定义一次：
-`QUIZGATE_API_BASE`（当前 `http://192.168.1.76:8080`）、`QUIZGATE_APP_GROUP`。
+`QUIZGATE_API_BASE`（公网 HTTPS 入口）、`QUIZGATE_APP_GROUP`，
+以及掐网档要放行的两枚出口 `QUIZGATE_TUNNEL_ALLOW_IP` / `QUIZGATE_TUNNEL_ALLOW_DNS`。
+放行 IP 是独立一项而不是从 `QUIZGATE_API_BASE` 里取：一条 IPv4 路由只能写地址，而 base 是域名。
+DNS 出口也是独立一项：隧道一起来系统 DNS 就被我们自己黑洞掉了，后端是域名时不留这一格，
+连「服务器是谁」都问不出来，取题和判分一起死 —— 所以 `VpnPlan.egress` 算不出这两格时两边都会
+**拒绝起隧道**（宁可不掐，不能把孩子锁死）。换服务器时这几行要一起改。
 
 ## 目录
 

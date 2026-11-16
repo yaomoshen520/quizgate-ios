@@ -137,14 +137,16 @@ final class VpnCutoff {
 
     private func perform(wantsUp: Bool, nowMs: Int64) async -> Outcome {
         let base = AppGroup.apiBase
-        let allowed = VpnPlan.allowedIPv4(fromBase: base)
-        let hostNote = VpnPlan.allowedNote(fromBase: base)
-        if wantsUp, allowed == nil {
+        let allowIP = AppGroup.tunnelAllowIP
+        let allowDNS = AppGroup.tunnelAllowDNS
+        let plan = VpnPlan.egress(fromBase: base, allowIP: allowIP, allowDNS: allowDNS)
+        let hostNote = VpnPlan.egressNote(fromBase: base, allowIP: allowIP, allowDNS: allowDNS)
+        if wantsUp, plan == nil {
             // 这条路在这里就断掉，是设计而不是兜底：放行那一格填不出来还起隧道，
             // 等于把扩展日后换到掐网档时的取题/判分两跳一起掐了 —— 那时不在场的正是我们自己。
-            let text = "隧道没起：" + hostNote + "，放行那一格填不出来"
+            let text = "隧道没起：" + hostNote + "，放行出口没配全"
             DiagLog.record("vpn", text + "，宁可不起隧道", level: .error, nowMs: nowMs)
-            return Outcome(applied: false, text: "VPN 没起：认不出可放行的后端 IP")
+            return Outcome(applied: false, text: "VPN 没起：放行出口没配全（后端 IP 或 DNS）")
         }
 
         let managers = await Self.loadAll()
@@ -160,7 +162,7 @@ final class VpnCutoff {
         }
 
         let manager = found ?? NETunnelProviderManager()
-        if found == nil { Self.configure(manager, allowed: allowed ?? "") }
+        if found == nil { Self.configure(manager, allowed: plan?.apiIPv4 ?? "") }
         if let saveError = await Self.save(manager) {
             let domain = saveError.domain
             let code = String(saveError.code)

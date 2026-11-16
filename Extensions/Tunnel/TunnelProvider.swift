@@ -26,7 +26,8 @@ private let tunnelTag = "tunnel"
 /// 起隧道之前自己就断掉的那些情况。走 completionHandler 交回系统，
 /// 系统会把它当成这次 startTunnel 的失败原因，主 App 那边读 status 就能看见。
 private enum CutoffError: Error {
-    /// 放行那一格填不出来。绝不能在这种状态下起隧道：那等于把答题接口自己也掐了。
+    /// 放行出口没配全（后端那枚 IP，或域名后端所要求的 DNS 出口）。
+    /// 绝不能在这种状态下起隧道：那等于把答题接口自己也掐了。
     case noAllowedHost
 }
 
@@ -49,9 +50,10 @@ final class TunnelProvider: NEPacketTunnelProvider {
     /// 不会被误读成"落着放行"。
     private var appliedRoute: VpnRoute?
 
-    /// 放行地址。startTunnel 里校验过一次之后缓存下来，之后每一次换档都复用同一枚：
+    /// 放行出口。startTunnel 里校验过一次之后缓存下来，之后每一次换档都复用同一份：
     /// 换档时再去读 Info.plist 会引入「起的时候认得、换的时候读不到」这种中间态。
-    private var allowedHost = ""
+    /// 空壳只在 startTunnel 已经拒绝起隧道之后才留在这里，那时没有任何一跳会走到换档。
+    private var egress = VpnPlan.Egress(apiIPv4: "", dnsIPv4s: [])
 
     /// 排期过期那一行只记一次翻转，不每 5 分钟刷一条。
     private var staleLogged = false
@@ -79,16 +81,20 @@ final class TunnelProvider: NEPacketTunnelProvider {
     override func startTunnel(options: [String: NSObject]?,
                               completionHandler: @escaping (Error?) -> Void) {
         let base = AppGroup.apiBase
-        let note = VpnPlan.allowedNote(fromBase: base)
+        let note = VpnPlan.egressNote(fromBase: base,
+                                      allowIP: AppGroup.tunnelAllowIP,
+                                      allowDNS: AppGroup.tunnelAllowDNS)
         DiagLog.record(tunnelTag, "startTunnel 被调，" + note, nowMs: nowMs())
 
-        guard let allowed = VpnPlan.allowedIPv4(fromBase: base) else {
-            // 断在这里是设计，不是兜底：没有放行地址还起隧道 = 孩子答对也提交不上去。
-            DiagLog.record(tunnelTag, "startTunnel 拒绝起隧道：放行那一格填不出来", level: .error, nowMs: nowMs())
+        guard let plan = VpnPlan.egress(fromBase: base,
+                                        allowIP: AppGroup.tunnelAllowIP,
+                                        allowDNS: AppGroup.tunnelAllowDNS) else {
+            // 断在这里是设计，不是兜底：放行出口没配全还起隧道 = 孩子答对也提交不上去。
+            DiagLog.record(tunnelTag, "startTunnel 拒绝起隧道：放行出口没配全", level: .error, nowMs: nowMs())
             completionHandler(CutoffError.noAllowedHost)
             return
         }
-        allowedHost = allowed
+        egress = plan
 
         let opening = Self.openingRoute()
         DiagLog.record(tunnelTag, "起隧道这一档=" + opening.label + "（" + note + "）", nowMs: nowMs())
@@ -187,7 +193,7 @@ final class TunnelProvider: NEPacketTunnelProvider {
     /// 和失败原文）刻意保持上一版逐字不变：家长后台和这一轮的判据都按它们 grep，
     /// 换了措辞就等于把上一轮的证据抹掉。
     private func set(route: VpnRoute, completion: ((Error?) -> Void)? = nil) {
-        let settings = Self.buildSettings(allowed: allowedHost, route: route)
+        let settings = Self.buildSettings(egress: egress, route: route)
         setTunnelNetworkSettings(settings) { [weak self] err in
             let ns = err as NSError?
             let verdict = ns == nil ? "成功" : "失败"
@@ -225,20 +231,27 @@ final class TunnelProvider: NEPacketTunnelProvider {
     /// 每一行的作用与对应证据：
     /// - includedRoutes = 默认路由 ⟹ 所有 IPv4 出网都交给这枚扩展；我们从不读 packetFlow，
     ///   于是这些包有去无回。这就是「断网」的全部机制。
-    /// - excludedRoutes = 后端 /32 ⟹ 答题那两跳（取题、判分）仍走真实接口。
+    /// - excludedRoutes = 放行出口那一组 /32 ⟹ 答题那两跳（取题、判分）仍走真实接口。
     ///   没有它，这道闸门会把孩子锁死在「答对也解不开」上。真机上一轮已证过它有效。
-    /// - dnsSettings = 黑洞地址 ⟹ 只在掐网档挂：放行档如果还挂着它，靠域名的 App
-    ///   连解析这一步都过不去，那就不叫放行，叫半断网。
+    /// - dnsSettings ⟹ 只在掐网档挂，挂哪一枚由后端地址的形状决定：
+    ///   后端是 IP 字面量时挂黑洞地址（我们自己的请求根本不查域名，而「别的 App 连域名都问不出来」
+    ///   正是这一格要的效果）；后端是域名时必须改挂一枚真能答的公共 DNS，并把同一枚 IP 也排除出隧道，
+    ///   否则解析这一步就先死了，上面那条放行路由压根用不上。
     ///
     /// 放行档刻意用空数组而不是 nil：`includedRoutes` 留 nil 在部分系统版本上被当成
     /// 「全部吸进来」，那一档就成了永远断网，而且和「设置没落成功」长得一模一样。
     /// 空数组的语义是唯一那一条「一个包都别给我」。
-    private static func buildSettings(allowed: String, route: VpnRoute) -> NEPacketTunnelNetworkSettings {
+    private static func buildSettings(egress: VpnPlan.Egress,
+                                      route: VpnRoute) -> NEPacketTunnelNetworkSettings {
+        let mask32 = "255.255.255.255"
         let v4 = NEIPv4Settings(addresses: [VpnPlan.tunnelIPv4], subnetMasks: [VpnPlan.tunnelIPv4Mask])
         if route == .cutoff {
             v4.includedRoutes = [NEIPv4Route.default()]
-            let keepAlive = NEIPv4Route(destinationAddress: allowed, subnetMask: "255.255.255.255")
-            v4.excludedRoutes = [keepAlive]
+            var keepAlive = [NEIPv4Route(destinationAddress: egress.apiIPv4, subnetMask: mask32)]
+            for dns in egress.dnsIPv4s {
+                keepAlive.append(NEIPv4Route(destinationAddress: dns, subnetMask: mask32))
+            }
+            v4.excludedRoutes = keepAlive
         } else {
             v4.includedRoutes = []
         }
@@ -246,7 +259,8 @@ final class TunnelProvider: NEPacketTunnelProvider {
         let settings = NEPacketTunnelNetworkSettings(tunnelRemoteAddress: VpnPlan.blackholeIPv4)
         settings.ipv4Settings = v4
         if route == .cutoff {
-            settings.dnsSettings = NEDNSSettings(servers: [VpnPlan.blackholeIPv4])
+            let servers = egress.dnsIPv4s.isEmpty ? [VpnPlan.blackholeIPv4] : egress.dnsIPv4s
+            settings.dnsSettings = NEDNSSettings(servers: servers)
         }
         // 只吸 IPv4。双栈网络下 IPv6 仍然通，是已知缺口而不是漏做：它要另一份
         // NEIPv6Settings，而这一轮要问系统的是「扩展能不能自己值班」，多塞一个变量就答不回来了。

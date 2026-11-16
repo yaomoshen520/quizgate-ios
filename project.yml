@@ -12,10 +12,21 @@ settings:
     SWIFT_VERSION: "5.9"
     CODE_SIGN_STYLE: Manual
     DEVELOPMENT_TEAM: ""
-    # App Group 与后端地址只在这里定义一次，由各 target 的 Info.plist 用 $(…) 取。
-    # 换环境改这两行即可，不要去改 plist。
+    # App Group、后端地址和隧道那两枚放行出口只在这里定义一次，由各 target 的 Info.plist 用 $(…) 取。
+    # 换环境改这几行即可，不要去改 plist。
     QUIZGATE_APP_GROUP: group.com.quizgate.ios
-    QUIZGATE_API_BASE: "http://101.35.194.117:53600"
+    QUIZGATE_API_BASE: "https://agreement.pdd88.top:53605"
+    # 「掐网之后留给答题接口那条活路」的 IP，必须单独写而不能从上面那行取：
+    # base 是域名时 VpnPlan.allowedIPv4 从 URL 里只能拿到域名，而一条 IPv4 路由只能写地址。
+    # 值就是上面那个域名解析到的机器地址（本轮实测：A 记录 = 101.35.194.117）。
+    QUIZGATE_TUNNEL_ALLOW_IP: "101.35.194.117"
+    # 后端是域名，就得再放行一枚 DNS：隧道一起来系统 DNS 被我们自己黑洞掉，
+    # 那时连「服务器是谁」都问不出来，上面那枚放行路由根本用不上 —— 闸门会把取题和判分一起掐死。
+    # 逗号分隔可以配两枚，防的是「某条运营商链路正好拦住了公共 DNS」这种单点，
+    # 它的失败方向不该是孩子答不了题。逗号后别加空格：这串要经 xcconfig 展开进 Info.plist，
+    # 带空格的值在展开那一跳更容易被当成列表拆开（VpnPlan.dnsExit 两种写法都认）。
+    # 换服务器时这三行一起改，见 VpnPlan.egress。
+    QUIZGATE_TUNNEL_ALLOW_DNS: "223.5.5.5,119.29.29.29"
   configs:
     Debug:
       SWIFT_OPTIMIZATION_LEVEL: "-Onone"
@@ -89,6 +100,10 @@ targets:
           - com.quizgate.ios.rearm
         QUIZGATE_APP_GROUP: $(QUIZGATE_APP_GROUP)
         QUIZGATE_API_BASE: $(QUIZGATE_API_BASE)
+        # 主 App 是「起不起隧道」那一步的判定方，所以两枚放行出口也必须在这份 plist 里读得到；
+        # 只有 Monitor 不需要它们（它只上报日志，不碰路由）。
+        QUIZGATE_TUNNEL_ALLOW_IP: $(QUIZGATE_TUNNEL_ALLOW_IP)
+        QUIZGATE_TUNNEL_ALLOW_DNS: $(QUIZGATE_TUNNEL_ALLOW_DNS)
         CFBundleURLTypes:
           - CFBundleURLName: com.quizgate.ios
             CFBundleURLSchemes:
@@ -230,6 +245,11 @@ targets:
         # 每份 Info.plist 各管各的 bundle，主 App 那一项不会传过来，缺了就永远填不出放行地址，
         # 于是扩展侧那道 fail-open 闸会一直拒绝起隧道（这是刻意的：宁可不掐，不能把孩子锁死）。
         QUIZGATE_API_BASE: $(QUIZGATE_API_BASE)
+        # 同一理由：扩展自己也要算出这两格，两边算法必须一模一样，
+        # 所以它们是各份 Info.plist 各读一次，而不是从主 App 传过来。
+        # 少一枚 DNS 出口的那一种尤其致命：掐网档会解析不出域名，取题和判分一起断掉。
+        QUIZGATE_TUNNEL_ALLOW_IP: $(QUIZGATE_TUNNEL_ALLOW_IP)
+        QUIZGATE_TUNNEL_ALLOW_DNS: $(QUIZGATE_TUNNEL_ALLOW_DNS)
         NSExtension:
           NSExtensionPointIdentifier: com.apple.networkextension.packet-tunnel
           NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).TunnelProvider
