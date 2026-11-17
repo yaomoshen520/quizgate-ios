@@ -595,6 +595,8 @@ message BankQuestion {
   QuestionType type = 11;
   string reference_answer = 12;
   string rubric = 13;
+  // MANUAL / PHOTO / AI / BUILTIN；UNKNOWN 表示历史私有题无法追溯来源。
+  string source = 14;
 }
 
 message ListBankReply {
@@ -693,6 +695,33 @@ message DeleteQuestionRequest {
 
 message DeleteQuestionReply {
   string message = 1;
+}
+
+// 家长主动出题。新题全部待核对，绝不直接进入孩子的候选池。
+message GenerateBankRequest {
+  string child_id = 1;
+  Subject subject = 2;
+  int32 grade = 3;
+  int32 count = 4;
+  string knowledge_point = 5;
+  bool avoid_existing = 6;
+}
+
+message GenerateBankReply {
+  int32 accepted = 1;
+  int32 skipped = 2;
+  repeated string errors = 3;
+  string engine_message = 4;
+  bool repeated = 5;
+}
+
+message DeleteBankSourceRequest {
+  string child_id = 1;
+  string source = 2;
+}
+
+message DeleteBankSourceReply {
+  int32 deleted = 1;
 }
 
 message SaveRuleRequest {
