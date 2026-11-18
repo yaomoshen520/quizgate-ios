@@ -73,6 +73,8 @@ DNS 出口也是独立一项：隧道一起来系统 DNS 就被我们自己黑�
 
 ## 协议口径
 
+2026-11-17：同步服务端智能出题与题库来源协议快照，LF SHA-256 `568bc89d0990d7ad9aeff6afbd867b800cbda6d3c87fdbc002ed5be7e874d62d`。本轮新增消息属于家长后台，未改设备答题字段；没有接入音视频。Swift 生成物仍按 `tools/gen-proto.sh` 在构建环境生成、不入库；Windows 本轮未运行 Swift 生成器或 Xcode，不能视为 iOS 构建通过。需求与待确认见[服务端实施清单](https://github.com/yaomoshen520/quizgate-server/blob/main/docs/智能出题实施与待确认.md)。
+
 和 Android 完全一致，没有 JSON 层：
 
 ```
