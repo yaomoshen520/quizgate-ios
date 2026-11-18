@@ -44,6 +44,18 @@ message RuleSnapshot {
   bool enabled = 5;
   int64 version = 6;
   GameModeRule game_mode = 7;
+  // 家长开关：藏起孩子端首页那块「帮助与说明」（防卸载/找回图标的入口）。
+  // 老客户端不认第 8 号字段会原样忽略，等于保持显示，所以默认值必须是 false（显示）。
+  bool hide_help = 8;
+  // 家长开关：藏起孩子端「诊断与更新」里的三格维护项——本机日志与性能、防卸载开关、隐藏桌面图标。
+  // 防卸载那一格是双向的：保护开着时孩子自己就能点掉保护再卸载，藏起来不是加密，是不给这个入口。
+  // 「检查并更新整包」那一格不藏：版本升级走它。老客户端不认第 9 号字段会原样忽略，
+  // 等于不藏，所以默认值必须是 false。
+  bool hide_maintenance = 9;
+  // 每次弹窗要连对几道题才放行（答错可看讲解/换变式题重答，答对该题才进下一道）。
+  // 出题接口本来就是一次一道，轮次推进在设备端：这个字段只定"答对几道算过关"。
+  // 老客户端不认第 10 号字段按 0 处理——设备端把 ≤0 当 1 道走，等于维持老行为。
+  int32 quiz_question_count = 10;
 }
 
 message GameModeRule {
@@ -91,6 +103,9 @@ message InstalledApp {
   // 0=自动，1=游戏并监管，2=非游戏。
   int32 classification = 4;
   bool is_game = 5;
+  // 设备侧 FLAG_SYSTEM。家长后台用它把系统应用单独分组展示；
+  // 展示不等于监管——计时仍以家长显式填入监管清单或归类为准。
+  bool is_system = 6;
 }
 
 message AppInventoryRequest {
@@ -595,6 +610,8 @@ message BankQuestion {
   QuestionType type = 11;
   string reference_answer = 12;
   string rubric = 13;
+  // MANUAL / PHOTO / AI / BUILTIN；UNKNOWN 表示历史私有题无法追溯来源。
+  string source = 14;
 }
 
 message ListBankReply {
@@ -693,6 +710,33 @@ message DeleteQuestionRequest {
 
 message DeleteQuestionReply {
   string message = 1;
+}
+
+// 家长主动出题。新题全部待核对，绝不直接进入孩子的候选池。
+message GenerateBankRequest {
+  string child_id = 1;
+  Subject subject = 2;
+  int32 grade = 3;
+  int32 count = 4;
+  string knowledge_point = 5;
+  bool avoid_existing = 6;
+}
+
+message GenerateBankReply {
+  int32 accepted = 1;
+  int32 skipped = 2;
+  repeated string errors = 3;
+  string engine_message = 4;
+  bool repeated = 5;
+}
+
+message DeleteBankSourceRequest {
+  string child_id = 1;
+  string source = 2;
+}
+
+message DeleteBankSourceReply {
+  int32 deleted = 1;
 }
 
 message SaveRuleRequest {
