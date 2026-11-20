@@ -53,6 +53,7 @@ struct HomeView: View {
                         Button(Theme.Copy.homePetRoom) { wardrobe = true; showPets = true }
                         Button(Theme.Copy.petShopTitle) { wardrobe = false; showPets = true }
                     }.buttonStyle(PrimaryButtonStyle()).disabled(!model.state.deviceBound)
+                    if model.state.deviceBound && !model.state.shieldApplied { answerCard }
                     if !model.state.deviceBound { bindCard }
                     #if DEBUG
                     if showDebug { shieldDebugCard }
@@ -112,7 +113,7 @@ struct HomeView: View {
         switch decision {
         case .shield:
             title = "该答题啦"
-            subtitle = "玩满这一轮了，答对一道就能继续"
+            subtitle = "完成这一轮答题就能继续"
             tone = .warn
         case .allow:
             title = "闸门在岗"
@@ -176,7 +177,7 @@ struct HomeView: View {
 
     private var answerCard: some View {
         VStack(alignment: .leading, spacing: Theme.Space.s4) {
-            Text("被挡住了？答一道题就放行")
+            Text(model.state.shieldApplied ? "完成本轮答题后继续玩" : "学习练习")
                 .font(.system(size: Theme.Text.control, weight: .bold))
                 .foregroundStyle(Theme.Palette.ink)
             Button {

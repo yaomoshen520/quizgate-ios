@@ -102,6 +102,12 @@ private final class FixtureProtocol: URLProtocol {
 
     func testChildScreens() async throws {
         let model = model()
+        model.activePet = 2
+        model.wornOutfit.hand = 9
+        var achievement = Quizgate_AchievementState()
+        achievement.points = 35
+        achievement.level = 2
+        model.achievement = achievement
         try await screenshot(HomeView().environmentObject(model), name: "home")
         try await screenshot(PetRoom().environmentObject(model), name: "shop")
         try await screenshot(PetRoom(wardrobe: true).environmentObject(model), name: "wardrobe")
