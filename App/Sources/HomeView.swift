@@ -20,12 +20,10 @@ struct HomeView: View {
     /// 首页、答题页共用同一个 `wide`，两屏的排版才不会一个两列一个单列。
     private var wide: Bool { horizontalSize == .regular }
 
-    /// 五段，次序与 Android `activity_main.xml` 逐段相同（跨端视觉契约钉着）：
-    /// 状态 hero → 倒计时 → 权限 → 最近发生的事 → 绑定码（仅未绑定时）。
-    /// 宽屏上第三、四段并两列，但**次序不变**：响应式只改排布，不改段落。
+    /// 首页与 Android 共用舞台、互动、倒计时、试衣间和商店的顺序。平台授权从设备设置进入。
     var body: some View {
         ZStack {
-            Theme.pageGradient.ignoresSafeArea()
+            Theme.Palette.petPage.ignoresSafeArea()
             ScrollView {
                 VStack(alignment: .leading, spacing: Theme.Space.s4) {
                     if let note = model.monitoringNote {
@@ -35,7 +33,7 @@ struct HomeView: View {
                         BannerView(text: banner, tone: .danger)
                     }
                     HStack {
-                        Text("我的萌宠").font(.largeTitle.bold())
+                        Text(Theme.Copy.petPreviewCaption).font(.largeTitle.bold())
                         Spacer()
                         if !model.state.deviceBound || model.state.rule?.hideSettings != true {
                             Button { showSettings = true } label: { Image(systemName: "gearshape") }
@@ -52,8 +50,8 @@ struct HomeView: View {
                     }
                     countdownCard
                     HStack {
-                        Button("试衣间") { wardrobe = true; showPets = true }
-                        Button("萌宠商店") { wardrobe = false; showPets = true }
+                        Button(Theme.Copy.homePetRoom) { wardrobe = true; showPets = true }
+                        Button(Theme.Copy.petShopTitle) { wardrobe = false; showPets = true }
                     }.buttonStyle(PrimaryButtonStyle()).disabled(!model.state.deviceBound)
                     if !model.state.deviceBound { bindCard }
                     #if DEBUG
@@ -64,17 +62,19 @@ struct HomeView: View {
                 .readableColumn()
             }
         }
-        .sheet(isPresented: $showPets, onDismiss: { Task { await model.heartbeat() } }) {
+        .navigationDestination(isPresented: $showPets) {
             PetRoom(wardrobe: wardrobe).environmentObject(model)
+                .onDisappear { Task { await model.heartbeat() } }
         }
-        .sheet(isPresented: $showSettings) {
-            NavigationStack {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: Theme.Space.s4) {
-                        statusHero; permissionCard; faultCard; bindCard; footer
-                    }.padding().readableColumn()
-                }.navigationTitle("设备设置").toolbar { Button("完成") { showSettings = false } }
-            }
+        .navigationDestination(isPresented: $showSettings) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: Theme.Space.s4) {
+                    NavigationLink("设置系统守护与选择应用") { SetupView().environmentObject(model) }
+                    statusHero; permissionCard; faultCard
+                    if !model.state.deviceBound { bindCard }
+                    footer
+                }.padding().readableColumn()
+            }.navigationTitle("设备设置")
         }
     }
 
@@ -94,7 +94,7 @@ struct HomeView: View {
                 if !achievement.badges.isEmpty { Text(achievement.badges.joined(separator: " · ")).font(.caption) }
             }
             if model.activePet > 0 {
-                Text("拖动萌宠旋转，点下方按钮互动").font(.caption)
+                Text(Theme.Copy.petDragHint).font(.caption)
                 HStack { motionButton("挥手", "wave"); motionButton("跳跃", "jump"); motionButton("跳舞", "dance"); motionButton("转圈", "spin") }
             }
         }.frame(maxWidth: .infinity, alignment: .leading)

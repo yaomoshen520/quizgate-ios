@@ -64,18 +64,27 @@ final class RemoteCommandStream {
         DiagLog.record("remote", "SSE 通道已连接")
         var eventType = ""
         var data = ""
-        for try await line in bytes.lines {
+        var buffer = Data()
+        for try await byte in bytes {
             if Task.isCancelled { break }
+            guard byte == 10 else {
+                if buffer.count >= 8192 { throw URLError(.dataLengthExceedsMaximum) }
+                buffer.append(byte)
+                continue
+            }
+            if buffer.last == 13 { buffer.removeLast() }
+            guard let line = String(data: buffer, encoding: .utf8) else { throw URLError(.cannotDecodeContentData) }
+            buffer.removeAll(keepingCapacity: true)
             if line.hasPrefix("event:") {
                 eventType = line.dropFirst(6).trimmingCharacters(in: .whitespaces)
             } else if line.hasPrefix("data:") {
                 data += line.dropFirst(5).trimmingCharacters(in: .whitespaces)
+                if data.utf8.count > 8192 { throw URLError(.dataLengthExceedsMaximum) }
             } else if line.isEmpty {
                 if !data.isEmpty { await dispatch(eventType: eventType, data: data) }
                 eventType = ""
                 data = ""
             }
-            // 以 ":" 开头的是心跳注释，忽略。
         }
     }
 

@@ -29,8 +29,8 @@ struct RootView: View {
     @EnvironmentObject var model: AppModel
 
     var body: some View {
-        Group {
-            if needsSetup {
+        NavigationStack {
+            if needsSetup && !model.state.deviceBound {
                 SetupView()
             } else {
                 HomeView()

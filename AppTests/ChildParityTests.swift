@@ -69,16 +69,32 @@ private final class FixtureProtocol: URLProtocol {
     }
 
     private func screenshot<V: View>(_ view: V, name: String) async throws {
-        let host = UIHostingController(rootView: view)
-        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
+        let host = UIHostingController(rootView: NavigationStack { view })
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let window = UIWindow(windowScene: scene)
+        window.frame = CGRect(x: 0, y: 0, width: 390, height: 844)
         window.rootViewController = host
-        window.isHidden = false
+        window.makeKeyAndVisible()
         host.view.frame = window.bounds
         host.view.layoutIfNeeded()
         try await Task.sleep(nanoseconds: 900_000_000)
         let image = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in
             window.drawHierarchy(in: window.bounds, afterScreenUpdates: true)
         }
+        let cgImage = try XCTUnwrap(image.cgImage)
+        var pixels = [UInt8](repeating: 0, count: 48 * 88 * 4)
+        let colorCount = try pixels.withUnsafeMutableBytes { bytes -> Int in
+            let context = try XCTUnwrap(CGContext(data: bytes.baseAddress, width: 48, height: 88,
+                bitsPerComponent: 8, bytesPerRow: 48 * 4, space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+            context.draw(cgImage, in: CGRect(x: 0, y: 0, width: 48, height: 88))
+            var colors = Set<UInt32>()
+            for i in stride(from: 0, to: bytes.count, by: 4) {
+                colors.insert(UInt32(bytes[i]) << 16 | UInt32(bytes[i + 1]) << 8 | UInt32(bytes[i + 2]))
+            }
+            return colors.count
+        }
+        XCTAssertGreaterThan(colorCount, 12, "\(name) rendered without visible interface content")
         let item = XCTAttachment(data: try XCTUnwrap(image.pngData()), uniformTypeIdentifier: "public.png")
         item.name = name + ".png"; item.lifetime = .keepAlways; add(item)
         window.isHidden = true

@@ -15,6 +15,7 @@ enum Theme {
         static let brand500 = Color(hex: 0x4C6EF5)
         static let brand600 = Color(hex: 0x3B5BDB)
         static let brand700 = Color(hex: 0x2B48A8)
+        static let petPage = Color(hex: 0xF0F6FA)
         static let ink = Color(hex: 0x1C1E2A)
         static let inkSoft = Color(hex: 0x5B6178)
         static let inkFaint = Color(hex: 0x8A90A2)
@@ -55,6 +56,10 @@ enum Theme {
     enum Copy {
         static let appName = "学习闸门"
         static let quizSuccessTitle = "答对啦！"
+        static let petPreviewCaption = "我的萌宠"
+        static let petShopTitle = "萌宠商店"
+        static let homePetRoom = "试衣间"
+        static let petDragHint = "拖动萌宠旋转，点下方按钮互动"
     }
     // END shared Android tokens
 

@@ -108,8 +108,9 @@ struct QuizView: View {
                     // 按钮不可压缩：知识点名字长是常态，关闭入口消失了孩子就退不出这一屏。
                     Chip(text: label(question.subject))
                         .fixedSize(horizontal: true, vertical: false)
-                    Chip(text: "第 \(question.grade) 年级")
-                        .fixedSize(horizontal: true, vertical: false)
+                    if question.grade > 0 {
+                        Chip(text: "第 \(question.grade) 年级").fixedSize(horizontal: true, vertical: false)
+                    }
                     if !question.knowledgePoint.isEmpty {
                         Chip(text: question.knowledgePoint)
                             .frame(maxWidth: wide ? Theme.Layout.chipMaxWide : Theme.Layout.chipMaxNarrow,

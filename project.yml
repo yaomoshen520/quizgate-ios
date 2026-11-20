@@ -56,6 +56,16 @@ targets:
         APPLICATION_EXTENSION_API_ONLY: YES
         SKIP_INSTALL: YES
 
+  QuizGatePresentationHost:
+    type: application
+    platform: iOS
+    sources: [AppTestsHost]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.quizgate.ios.presentationhost
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+
   QuizGatePresentationTests:
     type: bundle.unit-test
     platform: iOS
@@ -65,10 +75,13 @@ targets:
       - path: App/Resources/mobile-pet.html
       - path: AppTests
     dependencies:
+      - target: QuizGatePresentationHost
       - target: QuizGateKit
       - package: SwiftProtobuf
     settings:
       base:
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/QuizGatePresentationHost.app/QuizGatePresentationHost"
+        BUNDLE_LOADER: "$(TEST_HOST)"
         PRODUCT_BUNDLE_IDENTIFIER: com.quizgate.ios.presentationtests
         GENERATE_INFOPLIST_FILE: YES
 

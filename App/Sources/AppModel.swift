@@ -23,6 +23,7 @@ final class AppModel: ObservableObject {
     @Published var wornOutfit = Quizgate_PetOutfit()
     private var localAnswer: Int?
     private var quizTrace = ""
+    private var loadingQuestion = false
 
     // 答题养成：答对回包带回的积分/连对/等级/徽章，成功层显示。离线本地判分没有这一份（achievement=nil）。
     @Published var pointsEarned: Int32 = 0
@@ -528,6 +529,9 @@ final class AppModel: ObservableObject {
     }
 
     func loadQuestion(commandTrace: String? = nil) async {
+        guard !loadingQuestion else { return }
+        loadingQuestion = true
+        defer { loadingQuestion = false }
         if let commandTrace { quizTrace = commandTrace }
         else if question == nil || answeredCorrect { quizTrace = UUID().uuidString.lowercased() }
         if question == nil || answeredCorrect {
@@ -617,7 +621,7 @@ final class AppModel: ObservableObject {
     }
 
     func submitAnswer(index: Int) async {
-        guard let question else { return }
+        guard let question, question.type != .subjective, question.options.indices.contains(index) else { return }
         var request = Quizgate_AnswerRequest()
         request.questionID = question.questionID
         request.selectedIndex = Int32(index)
@@ -701,7 +705,11 @@ final class AppModel: ObservableObject {
                                + " unlockUntil=" + String(state.ledger.unlockUntilMs ?? -1),
                            level: reply.correct ? .info : .warn, nowMs: state.nowMs(), trace: quizTrace)
         } catch let error as ReportUnavailable {
-            banner = error.message
+            if !error.needsReenroll && state.deviceBound && localAnswer == nil {
+                makeLocalQuestion()
+            } else {
+                banner = error.message
+            }
         } catch {
             banner = "判分失败：\(error.localizedDescription)"
         }

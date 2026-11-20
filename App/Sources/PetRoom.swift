@@ -15,7 +15,6 @@ struct PetRoom: View {
     private let titles = ["head": "头饰", "face": "脸饰", "neck": "颈饰", "hand": "手持物"]
 
     var body: some View {
-        NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: Theme.Space.s4) {
                     if let shop {
@@ -92,7 +91,6 @@ struct PetRoom: View {
             }
             .navigationTitle(wardrobe ? "试衣间" : "萌宠商店")
             .toolbar { Button("完成") { dismiss() } }
-        }
         .task { await refresh() }
         .onChange(of: model.state.deviceBound) { if !$0 { dismiss() } }
     }
