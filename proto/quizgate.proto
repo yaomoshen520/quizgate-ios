@@ -56,6 +56,14 @@ message RuleSnapshot {
   // 出题接口本来就是一次一道，轮次推进在设备端：这个字段只定"答对几道算过关"。
   // 老客户端不认第 10 号字段按 0 处理——设备端把 ≤0 当 1 道走，等于维持老行为。
   int32 quiz_question_count = 10;
+  // 家长开关：藏起孩子端首页那枚「设备设置」入口（新版孩子端是齿轮图标）。
+  // 这一档比 hide_maintenance 高一格：设置页整页对孩子消失，绑定码、系统权限入口、
+  // 「诊断与更新」那三格一起够不着——家长配完之后不再给孩子一个"自己把无障碍关掉"的按钮。
+  // 它只是提高孩子的动手成本，不是安全边界：知道路径的人仍然可以在系统设置里关掉无障碍服务。
+  // 未绑定的设备走服务端默认规则（本字段为 false），所以解绑之后入口会自己回来，
+  // 那台手机照样能把绑定码显示给下一个家长。老客户端不认第 11 号字段会原样忽略，
+  // 等于不藏，所以默认值必须是 false。
+  bool hide_settings = 11;
 }
 
 message GameModeRule {
@@ -155,6 +163,31 @@ message EnrollRequest {
   string install_id = 1;
   string device_model = 2;
   int32 android_api_level = 3;
+  // ── 设备画像（随登记上报，旧客户端留空 ⇒ 库里各列全可空/默认值）──────
+  // platform 是三端共用的判定列：android / ios / harmony。全库原来没有这一格，
+  // iOS 还是安卓只能拿 device_model 字符串反推；机型适配的归组从这一格开始。
+  string platform = 4;
+  // 应用版本。versionName 给人看，versionCode 用来答"v15 上有没有这个问题"。
+  string app_version_name = 5;
+  int64 app_version_code = 6;
+  string device_manufacturer = 7;
+  string device_brand = 8;
+  // 系统版本仅参考：鸿蒙系上 RELEASE/SDK_INT 报的是安卓兼容层的值。
+  string os_release = 9;
+  // ROM/定制固件没有行业标准字段，唯一可靠落点就是 DISPLAY（Bugly 同款取法）。
+  string rom_display = 10;
+  string rom_build_id = 11;
+  // SoC：API 31+ 才有 SOC_MANUFACTURER/SOC_MODEL，低版本回空串。
+  // ROM 的无障碍/浮层行为差异常跟芯片走，这一格留出来。
+  string soc = 12;
+  // SUPPORTED_ABIS[0]。
+  string abi = 13;
+  int32 screen_width_px = 14;
+  int32 screen_height_px = 15;
+  int32 screen_density_dpi = 16;
+  int64 total_mem_mb = 17;
+  // 18 号留空：has_gms 的判据（com.android.vending 存在性 vs GoogleApiAvailability）
+  // 在国产 ROM 上语义不同，口径定了再进协议，别占着号给一个没定义过的承诺。
 }
 
 message EnrollReply {
@@ -219,6 +252,17 @@ message ChildAchievementRequest {
 
 message ChildAchievementReply {
   AchievementState achievement = 1;
+  // 家长只读的萌宠账：已兑换的编号 + 当前佩戴的那一只。
+  // 这里刻意没有"替孩子兑换""替孩子换佩戴"的字段——花孩子积分这件事只长在设备侧口子上，
+  // 家长侧连一个可写的形状都不给，web 那一页因此画不出按钮来。
+  repeated PetId owned_pet_ids = 2;
+  PetId active_pet_id = 3;
+  // 价目表原样带一份给家长看。为什么不许前端自己写死那九个名字：这一列改一次要跟着改素材、
+  // 安卓商城和家长卡片，抄一份到 web 就是第五处会漏改的地方——服务端这一份是唯一的口径。
+  repeated PetPrice price_list = 4;
+  PetOutfit pet_outfit = 5;
+  repeated AccessoryPrice accessory_prices = 6;
+  repeated int32 owned_accessory_ids = 7;
 }
 
 // 远程即时控制：家长给某个孩子下命令，服务端经共享 SSE 通道推到设备。
@@ -283,6 +327,15 @@ message HeartbeatReply {
   AvatarId avatar_id = 5;
   // 答题养成快照：设备缓存后让首页/答题页的形象持久佩戴皇冠勋章，不必等答对那一跳。
   AchievementState achievement = 6;
+  // 已解锁的 3D 萌宠，和当前佩戴的那一只。和 avatar_id 同一个理由走心跳：
+  // 换佩戴不该抬规则版本，而孩子兑完一只要在首页立刻看到它换掉了。
+  // 老客户端不认第 7/8 号字段会原样忽略，继续画那只 2D 狐狸——active_pet_id=0 时
+  // 新客户端画的也是它，所以这条向下兼容不靠"字段恰好没值"。
+  repeated PetId owned_pet_ids = 7;
+  PetId active_pet_id = 8;
+  PetOutfit pet_outfit = 9;
+  repeated int32 owned_accessory_ids = 10;
+  LogUploadMode log_upload_mode = 11;
 }
 
 // ── 拆闸门事件（孩子动手的证据）──────────────────────────
@@ -362,10 +415,18 @@ message DeviceLogLine {
   // 客户端必须自己先脱敏再发：这一列会原样落库、原样给家长看。
   // 令牌、绑定码、口令这类东西一旦进了日志通道，就等于把它们发给了所有能读这台设备日志的人。
   string message = 4;
+  string correlation_id = 5;
+  string crash_fingerprint = 6;
 }
 
 message DeviceLogReportRequest {
   repeated DeviceLogLine lines = 1;
+  // 批次信封：这些值随应用升级才变，每行重复带三遍字节不值。服务端在写入时刻把
+  // app_version_code 盖到镜像每一行上；platform/rom_display 只进设备台账，读取时 join，
+  // 不随行——那是设备表的属性，不是这一行的属性。
+  string platform = 2;
+  int64 app_version_code = 3;
+  string rom_display = 4;
   // 刻意没有"客户端自己丢掉过多少行"这一个字段：服务端没有地方收它，
   // 挂了字段就是承诺一件不实现的事。丢行数的正确去处是客户端自己写一条 WARN 日志，
   // 它走同一个通道、同一个界面，不需要协议为它开一格。
@@ -419,6 +480,9 @@ message ChildSummary {
   int32 today_correct = 16;
   // 最新解锁的徽章编号：形象胸前挂这枚勋章。空串＝还没有徽章。
   string latest_badge = 17;
+  // 当天 0 点（家长时区）起算的累计玩机时长，来自 usage_event 的 played_ms 聚合。
+  // 0 有两种读法（真没玩 / 用量还没上报），家长眼里都是"还没玩"，界面不必区分。
+  int64 today_played_ms = 18;
 }
 
 message LoginReply {
@@ -500,6 +564,11 @@ message DeviceLogItem {
   string tag = 4;
   string message = 5;
   string device_model = 6;
+  // 写入那一刻从批次信封盖下来的版本号：设备表是可变的，只有随行这一份才答得出
+  // "这一条是哪个版本的客户端写的"。旧客户端写的就是 0。
+  int64 app_version_code = 7;
+  string correlation_id = 8;
+  string crash_fingerprint = 9;
 }
 
 message DeviceLogsReply {
@@ -781,6 +850,104 @@ message ListAccountsReply {
   repeated AccountSummary accounts = 1;
 }
 
+// ── 设备台账与诊断流水（管理员）────────────────────────────
+// 设备画像与归属在这里成体系地给人看：哪一端、什么机型（手机还是平板）、哪家 ROM、
+// 哪个应用版本、挂在谁家孩子名下。机型适配的分析素材从这一张表开始。
+
+message ListDevicesRequest {
+}
+
+message AdminDeviceSummary {
+  int64 device_id = 1;
+  string install_id = 2;
+  string device_model = 3;
+  // android / ios / harmony；旧客户端留空，界面照实显示"未上报"。
+  string platform = 4;
+  // phone / tablet / 空。服务端按屏幕最短边折算 dp ≥ 600 判平板，客户端不用再报一格。
+  string device_type = 5;
+  string device_manufacturer = 6;
+  string device_brand = 7;
+  string os_release = 8;
+  string rom_display = 9;
+  int32 android_api_level = 10;
+  int64 app_version_code = 11;
+  string app_version_name = 12;
+  string soc = 13;
+  string abi = 14;
+  int32 total_mem_mb = 15;
+  int64 child_id = 16;
+  string child_name = 17;
+  int64 parent_id = 18;
+  string parent_name = 19;
+  int64 last_heartbeat_ms = 20;
+  LogUploadMode log_upload_mode = 21;
+}
+
+enum LogUploadMode {
+  LOG_UPLOAD_NORMAL = 0;
+  LOG_UPLOAD_WARN = 1;
+  LOG_UPLOAD_ERROR = 2;
+  LOG_UPLOAD_PAUSED = 3;
+}
+
+message SetLogUploadModeRequest {
+  int64 device_id = 1;
+  LogUploadMode mode = 2;
+}
+
+message ListDevicesReply {
+  repeated AdminDeviceSummary devices = 1;
+}
+
+// 按设备翻流水。level/tag 是可选过滤器，空串＝不过滤。
+message AdminDeviceLogsRequest {
+  int64 device_id = 1;
+  string level = 2;
+  string tag = 3;
+  int32 limit = 4;
+  int64 from_ms = 5;
+  int64 to_ms = 6;
+  int64 app_version_code = 7;
+  string correlation_id = 8;
+  bool aggregate_errors = 9;
+  bool error_archive = 10;
+}
+
+message DeviceErrorGroup {
+  string rom_display = 1;
+  int64 app_version_code = 2;
+  string tag = 3;
+  string crash_fingerprint = 4;
+  int64 occurrences = 5;
+  int64 device_count = 6;
+}
+
+message AdminDeviceLogsReply {
+  repeated DeviceLogItem lines = 1;
+  repeated DeviceErrorGroup error_groups = 2;
+}
+
+// ── 诊断流水保存时长（管理员可配）────────────────────────────
+// 流水存 Redis，一条一个 TTL；改时长对之后写入的行生效，已经带着旧 TTL 的行不动——
+// Redis 的 SETEX 改不了历史键，这条边界要在界面上说清，不能让人以为改完立刻全库生效。
+
+message GetDevlogRetentionRequest {
+}
+
+message GetDevlogRetentionReply {
+  int32 hours = 1;
+  int32 min_hours = 2;
+  int32 max_hours = 3;
+}
+
+message SaveDevlogRetentionRequest {
+  int32 hours = 1;
+}
+
+message SaveDevlogRetentionReply {
+  int32 hours = 1;
+}
+
 // ── 账号生命周期 ─────────────────────────────────────────
 
 // 自助注册：注册码是唯一那道闸，服务端永远只产出 PARENT 角色，
@@ -859,6 +1026,92 @@ enum AvatarId {
   FOX_SAND = 5;
   FOX_TEAL = 6;
   FOX_ROSE = 7;
+}
+
+// 3D 萌宠（试衣间里那九只）。编号顺序＝avatar-demo/pet-config.js 里 pets 数组的顺序，
+// 只能往后追加、不能重排：重排一次就把孩子已经兑换的那只猫换成狗，且看不出问题在哪。
+// 价格由管理员配置并持久化，兑换必须携带孩子确认的报价。
+enum PetId {
+  PET_UNSPECIFIED = 0;
+  PET_FOX = 1;
+  PET_CAT = 2;
+  PET_BUNNY = 3;
+  PET_PANDA = 4;
+  PET_DRAGON = 5;
+  PET_UNICORN = 6;
+  PET_PENGUIN = 7;
+  PET_PUPPY = 8;
+  PET_SLIME = 9;
+}
+
+// 一只萌宠卖多少答题积分。label 是给孩子看的那句中文名，同样由服务端目录给。
+message PetPrice {
+  PetId pet_id = 1;
+  string label = 2;
+  int32 cost = 3;
+}
+
+// 兑换、换佩戴、打开兑换页三个请求都只要一个编号（第三个连编号都不要）。
+// 这三个口只挂设备令牌：家长侧连"替孩子点一下"的入口都不给，见 PetStateReply 的读法。
+message RedeemPetRequest {
+  PetId pet_id = 1;
+  int32 expected_cost = 2;
+}
+
+message SelectPetRequest {
+  PetId pet_id = 1;
+}
+
+message PetOutfit {
+  int32 head = 1;
+  int32 face = 2;
+  int32 neck = 3;
+  optional int32 hand = 4; // Absent preserves the stored item; zero removes it.
+}
+
+message AccessoryPrice {
+  int32 accessory_id = 1;
+  string label = 2;
+  string slot = 3;
+  string model_key = 4;
+  int32 cost = 5;
+}
+
+message RedeemAccessoryRequest {
+  int32 accessory_id = 1;
+  int32 expected_cost = 2;
+}
+
+message SavePetOutfitRequest {
+  PetId pet_id = 1;
+  PetOutfit outfit = 2;
+}
+
+message ListPetPricesRequest {}
+
+message SavePetPriceRequest {
+  bool accessory = 1;
+  int32 item_id = 2;
+  int32 cost = 3;
+}
+
+message PetCatalogReply {
+  repeated PetPrice pets = 1;
+  repeated AccessoryPrice accessories = 2;
+}
+
+// 萌宠账本的当前状态，三个答复共用一份：余额、已拥有、正在佩戴、价目表、一句人话。
+// reason 非空即这次没成（积分不够/已经拥有/没这一只/这台设备还没绑孩子）；
+// 失败时上面几个字段仍返回服务端的真实值，端上直接照画，不用自己猜扣了多少。
+message PetStateReply {
+  int32 points_left = 1;
+  repeated PetId owned_pet_ids = 2;
+  PetId active_pet_id = 3;
+  repeated PetPrice price_list = 4;
+  string reason = 5;
+  repeated AccessoryPrice accessory_prices = 6;
+  repeated int32 owned_accessory_ids = 7;
+  PetOutfit outfit = 8;
 }
 
 message CreateChildRequest {
@@ -987,6 +1240,102 @@ message SetEmailRequest {
 
 message SetEmailReply {
   string email = 1;
+}
+
+// ── 微信提醒（一家长一枚扫码会话）──────────────────────────────────────────
+// 这条通道的形状由协议决定：iLink 里的 ClawBot 是"一个微信号自己那一只"，
+// 不是"一只机器人对很多观众"。所以绑定必须由家长亲手扫码——扫成的那一次应答里
+// 同时给出登录凭证（bot_token）和扫码人的身份（ilink_user_id），身份和钥匙是同一跳拿到的。
+// 也因此这里既没有"手填微信号"的入口，也没有那六个要家长抄过来的字符：
+// 前者等于允许把告警定向推给任意陌生人，后者在一个没有"加好友/按号找人"端点的协议里无处可兑。
+// 凭证过期（服务端连续回 -14）之后由家长自己再扫一次，界面把那句话说清楚就行。
+
+// 出码。force=false 时如果手上那张还远没到过期就接着用它：
+// 协议侧对换码有上限（刷新超过三次要停手），而界面每次进这一页都会问一次，
+// 不加这道闸等于每刷一次页面就烧掉一次签发。
+message WechatBindQrRequest {
+  bool force = 1;
+}
+
+// 微信在手机上给出一串数字时用它提交。服务端把它带到下一次状态轮询之后就丢掉：
+// 它是这一次扫码的一部分，不是这位家长的长期凭据，所以不落库、不进日志。
+message WechatPinRequest {
+  string code = 1;
+}
+
+message WechatBindStatusRequest {
+}
+
+message UnbindWechatRequest {
+}
+
+// 发一条测试提醒。没有参数：文案在服务端写死，正文和真实告警同一套渲染规则，
+// 家长侧按钮只负责"按下去"，不参与拼内容。
+message WechatTestPushRequest {
+}
+
+// accepted=true 表示服务端已经把这条交给微信通道；收没收到要看手机。
+// 失败档位单独成枚举，不让界面从布尔反面去猜原因。
+message WechatTestPushReply {
+  bool accepted = 1;
+  WechatTestPushFailure reason = 2;
+}
+
+enum WechatTestPushFailure {
+  WECHAT_TEST_PUSH_OK = 0;
+  WECHAT_TEST_PUSH_NOT_BOUND = 1;
+  // 凭证已死（连续 -14 超过容忍窗口）：这条测试发不出去，要先重新扫码。
+  WECHAT_TEST_PUSH_NEED_RESCAN = 2;
+  WECHAT_TEST_PUSH_CHANNEL_OFF = 3;
+  // 通道收到但微信侧没应答成功。服务端原话只进日志，不进这一档。
+  WECHAT_TEST_PUSH_SEND_FAILED = 4;
+}
+
+// 一场扫码会话走到哪一步。家长手机上那几句话全部由界面按这一档翻，
+// 服务端不代替界面组织文案，也不回任何"服务端原话"—— errmsg 里可能带着凭证或身份。
+enum WechatScanState {
+  // 此刻没有进行中的扫码会话（没点过，或者那一场已经收摊）。
+  WECHAT_SCAN_UNSPECIFIED = 0;
+  WAITING = 1;
+  SCANNED = 2;
+  // 微信要求把手机上那串数字填回来：只有这一档界面上要出输入框。
+  NEED_PIN = 3;
+  CONFIRMED = 4;
+  // 二维码过期。协议没回它的 TTL，界面读到的是我们那场会话自己的截止时刻。
+  EXPIRED = 5;
+  CANCELED = 6;
+  // 这个微信号已经绑给别处了：不是"我们失败"，是"这只号名花有主"，家长要的是另一句文案。
+  ALREADY_BOUND = 7;
+  // 换码超过三次还没过：只能稍后再点一次，不要再自动重试。
+  TOO_MANY = 8;
+  FAILED = 9;
+  // 连码都没能从微信那儿取回来，这一场没有可展示的东西。
+  ISSUE_FAILED = 10;
+}
+
+// 出码、提交数字、查状态、解绑四个接口回同一份：绑定之后界面读的还是那一格，不各写一套字段。
+message WechatAlertStatusReply {
+  bool bound = 1;
+  // 只回尾 4 位。这一列是家长在微信侧的身份，整串吐给浏览器没有任何界面需要它。
+  string masked_user = 2;
+  int64 bound_at_ms = 3;
+  // 4、5 原来是那枚六个字符的绑定码和它的过期时刻。绑定码整个机制被扫码取代是因为
+  // 它假设"一只机器人对很多观众、家长想办法把自己报给机器人"，而协议的模型不是这样。
+  // 号位留着，别再让下一版把别的含义塞进这两个位置。
+  reserved 4, 5;
+  // 总开关 quizgate.wechat.enabled。关着的时候这条路此刻走不通，界面要如实说，
+  // 不能因为"码都画出来了"就显示成已经绑好。
+  bool channel_ready = 6;
+  WechatScanState scan_state = 7;
+  // 会话还活着时把图画出来带上（含自动换码后的那一张新码）。给的是我们自己排的 SVG，
+  // 不是二维码的原文：原文能被拿去一直读到 confirmed，也就拿走了那枚 bot_token。
+  string qr_svg = 8;
+  // 这一场会话的截止时刻。它只是界面用来显示"还剩多久"的那一格，过期判定在服务端。
+  int64 scan_deadline_ms = 9;
+  // 登录态已死（连续 -14 超过容忍窗口）。这一条不是"没发出去"，是"要他再扫一次"，
+  // 两者的文案完全不同，所以单独给一格，不让界面从 bound 的反面去猜。
+  bool needs_rescan = 10;
+  int64 last_push_at_ms = 11;
 }
 
 // 上传自定义头像。前端先把图缩到 256×256 再传，服务端再按白名单和上限收一次：

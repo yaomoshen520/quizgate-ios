@@ -5,6 +5,7 @@ import SwiftUI
 /// 改这里之前先改 Android 那份，两边要一起动。
 enum Theme {
 
+    // BEGIN shared Android tokens
     enum Palette {
         static let brand050 = Color(hex: 0xF4F7FF)
         static let brand100 = Color(hex: 0xEDF2FF)
@@ -14,18 +15,15 @@ enum Theme {
         static let brand500 = Color(hex: 0x4C6EF5)
         static let brand600 = Color(hex: 0x3B5BDB)
         static let brand700 = Color(hex: 0x2B48A8)
-
         static let ink = Color(hex: 0x1C1E2A)
         static let inkSoft = Color(hex: 0x5B6178)
         static let inkFaint = Color(hex: 0x8A90A2)
-        static let inkOnBrand = Color.white
-
+        static let inkOnBrand = Color(hex: 0xFFFFFF)
         static let pageTop = Color(hex: 0xEEF2FF)
-        static let pageBottom = Color.white
-        static let card = Color.white
+        static let pageBottom = Color(hex: 0xFFFFFF)
+        static let card = Color(hex: 0xFFFFFF)
         static let cardStroke = Color(hex: 0xE6EAF6)
         static let surfaceSunken = Color(hex: 0xF4F6FB)
-
         static let ok = Color(hex: 0x1D7A46)
         static let okBg = Color(hex: 0xE7F6EC)
         static let okStroke = Color(hex: 0xA9DDBB)
@@ -35,14 +33,11 @@ enum Theme {
         static let danger = Color(hex: 0xB3261E)
         static let dangerBg = Color(hex: 0xFDECEA)
         static let dangerStroke = Color(hex: 0xF0B4AC)
-
         static let optionStroke = Color(hex: 0xDFE4F1)
         static let optionPressed = Color(hex: 0xF4F7FF)
         static let noteBg = Color(hex: 0xFFF6E5)
         static let noteStroke = Color(hex: 0xF2D9A6)
         static let noteInk = Color(hex: 0x7A5230)
-        /// 答对那一屏的渐变底色：白到一点点绿。原来写在 QuizView 的字面量里，
-        /// 和 ok/okBg 分家之后，改成功色要改两个文件。
         static let successWash = Color(hex: 0xF2F9F4)
     }
 
@@ -56,6 +51,12 @@ enum Theme {
         static let s8: CGFloat = 32
         static let s10: CGFloat = 40
     }
+
+    enum Copy {
+        static let appName = "学习闸门"
+        static let quizSuccessTitle = "答对啦！"
+    }
+    // END shared Android tokens
 
     enum Radius {
         /// 卡片的圆角。Android `bg_card.xml` 里写死的是 26dp、`bg_hero_card.xml` 用 radius_lg，

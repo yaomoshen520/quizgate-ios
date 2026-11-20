@@ -193,7 +193,7 @@ struct QuizView: View {
             Image(systemName: "checkmark.seal.fill")
                 .font(.system(size: Theme.Text.successIcon))
                 .foregroundStyle(Theme.Palette.ok)
-            Text("答对了")
+            Text(Theme.Copy.quizSuccessTitle)
                 .font(.system(size: Theme.Text.hero, weight: .heavy))
                 .foregroundStyle(Theme.Palette.ink)
             Text("这一轮重新开始计时，去玩吧")
