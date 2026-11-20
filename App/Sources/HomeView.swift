@@ -10,6 +10,7 @@ struct HomeView: View {
     @EnvironmentObject var model: AppModel
     @Environment(\.horizontalSizeClass) private var horizontalSize
     @State private var showDebug = false
+    @State private var showPets = false
 
     /// 宽屏 = iPad（以及 iPad 上的全屏分栏）。判据只有这一处：
     /// 首页、答题页共用同一个 `wide`，两屏的排版才不会一个两列一个单列。
@@ -33,6 +34,9 @@ struct HomeView: View {
                     // iOS 没有无障碍服务替孩子把答题页顶到最前，落盾之后这一屏就是唯一的出口，
                     // 所以这颗按钮是 iOS 独有的第六块——它占的正是 Android 自动抢屏那一格。
                     if model.state.shieldApplied { answerCard }
+                    if model.state.deviceBound {
+                        Button("萌宠商城与试衣间") { showPets = true }.buttonStyle(PrimaryButtonStyle())
+                    }
                     countdownCard
                     LazyVGrid(columns: cardGridColumns(wide: wide), alignment: .leading,
                               spacing: Theme.Space.s4) {
@@ -49,6 +53,7 @@ struct HomeView: View {
                 .readableColumn()
             }
         }
+        .sheet(isPresented: $showPets) { PetRoom().environmentObject(model) }
     }
 
     private var statusHero: some View {
@@ -84,6 +89,9 @@ struct HomeView: View {
             HStack(spacing: Theme.Space.s3) {
                 // 家长在后台挑的那只：编号走心跳，动作走本机判定。
                 // 编号认不出来时它自己整块不画、不留空位，和"还没有形象"时长得一样。
+                if model.activePet > 0 {
+                    PetStage(pet: model.activePet, outfit: model.wornOutfit).frame(height: 160)
+                } else {
                 AvatarRigView(avatarId: model.state.avatarId ?? 0,
                               playState: model.currentPlayState(),
                               size: Theme.Metric.avatarHero,
@@ -91,6 +99,7 @@ struct HomeView: View {
                               greetsOnAppear: true,
                               achievementLevel: Int(model.achievement?.level ?? 0),
                               achievementBadge: model.achievement?.latestBadge)
+                }
                 Circle()
                     .fill(tone == .ok ? Theme.Palette.ok : (tone == .warn ? Theme.Palette.warn : Theme.Palette.danger))
                     .frame(width: Theme.Metric.toneDot, height: Theme.Metric.toneDot)

@@ -17,6 +17,12 @@ final class AppModel: ObservableObject {
     @Published var question: Quizgate_Question?
     @Published var explanation: String?
     @Published var answeredCorrect = false
+    @Published var completedQuestions = 0
+    @Published var roundTotal = 1
+    @Published var activePet = 0
+    @Published var wornOutfit = Quizgate_PetOutfit()
+    private var localAnswer: Int?
+
     // 答题养成：答对回包带回的积分/连对/等级/徽章，成功层显示。离线本地判分没有这一份（achievement=nil）。
     @Published var pointsEarned: Int32 = 0
     @Published var achievement: Quizgate_AchievementState?
@@ -442,6 +448,8 @@ final class AppModel: ObservableObject {
             )
             applyServerTime(reply.serverTimeMs)
             state.deviceBound = reply.deviceBound
+            activePet = reply.deviceBound && reply.ownedPetIds.contains(reply.activePetID) ? reply.activePetID.rawValue : 0
+            wornOutfit = reply.petOutfit
             applyAvatar(reply.avatarID.rawValue)
             // 成就快照随心跳缓存：形象持久佩戴皇冠勋章，不必等答对那一跳（与安卓一致）。
             if reply.hasAchievement { achievement = reply.achievement }
@@ -493,7 +501,26 @@ final class AppModel: ObservableObject {
 
     // MARK: - 答题闭环
 
+    private func makeLocalQuestion() {
+        let a = Int.random(in: 3...24), b = Int.random(in: 2...18)
+        let values = [a+b, a+b+1, a+b-1, a+b+2].shuffled()
+        var practice = Quizgate_Question()
+        practice.questionID = "local-" + UUID().uuidString
+        practice.knowledgePoint = "本机加法练习"
+        practice.stem = "\(a) + \(b) = ?"
+        practice.options = values.map { String($0) }
+        localAnswer = values.firstIndex(of: a+b)
+        question = practice
+        explanation = nil
+        answeredCorrect = false
+        banner = "当前使用本机练习，联网后补报记录。"
+    }
+
     func loadQuestion() async {
+        if question == nil || answeredCorrect {
+            completedQuestions = 0
+            roundTotal = min(3, max(1, state.rule?.quizQuestionCount ?? 1))
+        }
         guard let token = state.deviceToken, let api else {
             banner = "还没登记到服务器，先连一次网络"
             return
@@ -522,6 +549,7 @@ final class AppModel: ObservableObject {
                 reply = got
                 break
             } catch let error as ReportUnavailable {
+                if error.needsReenroll { banner = "设备凭据失效，请重新绑定"; return }
                 failure = error.message
                 break
             } catch {
@@ -531,15 +559,20 @@ final class AppModel: ObservableObject {
         }
         guard let reply else {
             // 两轮都没走到「拿到回包」这一步，说明网络那一跳就断了，banner 里已经是原因。
-            if !failure.isEmpty { banner = failure }
+            if state.deviceBound { makeLocalQuestion() }
+            else if !failure.isEmpty { banner = failure }
             return
         }
         applyServerTime(reply.serverTimeMs)
-        state.rule = mapRule(reply.rule)
+        if reply.hasRule {
+            state.rule = mapRule(reply.rule)
+            if completedQuestions == 0 { roundTotal = min(3, max(1, state.rule?.quizQuestionCount ?? 1)) }
+        }
         persist()
         // 「服务端没题可给」和「给了一道题」是两个世界：没有这道判断时，空应答会被当成
         // 一道题渲染——空白题干、四个空选项，孩子点哪都算错。
         guard reply.hasQuestion else {
+            if state.deviceBound { makeLocalQuestion(); return }
             banner = "这孩子的题库里没有核对过的题，请家长先录题"
             DiagLog.record("quiz", "取题空手而回：服务端没给题（请求 kp=" + knowledgePoint + "）",
                            level: .warn, nowMs: state.nowMs())
@@ -548,6 +581,8 @@ final class AppModel: ObservableObject {
         DiagLog.record("quiz", "取到题 id=" + reply.question.questionID
                            + " kp=" + reply.question.knowledgePoint,
                        nowMs: state.nowMs())
+        localAnswer = nil
+        banner = nil
         question = reply.question
         explanation = nil
         answeredCorrect = false
@@ -586,15 +621,41 @@ final class AppModel: ObservableObject {
     }
 
     private func submit(request: Quizgate_AnswerRequest, picked: String) async {
-        guard let question, let token = state.deviceToken, let api else { return }
+        guard !busy, !answeredCorrect, explanation == nil, let question, let token = state.deviceToken, let api else { return }
         busy = true
         defer { busy = false }
         do {
-            let reply: Quizgate_AnswerReply = try await api.post(
-                "answer", token: token, request: request, reply: Quizgate_AnswerReply.self
-            )
+            var reply = Quizgate_AnswerReply()
+            if let localAnswer {
+                reply.correct = Int(request.selectedIndex) == localAnswer
+                reply.explanation = "请把题目里的两个数相加。"
+                var event = Quizgate_UsageEvent()
+                event.eventID = UUID().uuidString
+                event.occurredAtMs = state.nowMs()
+                event.appPackage = "com.quizgate.ios"
+                event.correctCount = reply.correct ? 1 : 0
+                event.wrongCount = reply.correct ? 0 : 1
+                var usage = Quizgate_UsageReportRequest()
+                usage.events = [event]
+                guard let defaults = AppGroup.defaults,
+                      OutboxStore.enqueue(PendingReport(id: event.eventID, path: "usage",
+                          payload: try usage.serializedData(), createdAtMs: event.occurredAtMs), to: defaults)
+                else { banner = "本机记录保存失败，请重试"; return }
+            } else {
+                reply = try await api.post("answer", token: token, request: request, reply: Quizgate_AnswerReply.self)
+            }
             if reply.correct {
                 state.ledger.correctCount += 1
+                if completedQuestions + 1 < roundTotal {
+                    completedQuestions += 1
+                    state.ledger.lastQuestionId = question.questionID
+                    state.ledger.lastKnowledgePoint = nil
+                    if reply.hasAchievement { achievement = reply.achievement }
+                    explanation = "答对了，继续下一题。"
+                    persist()
+                    await loadQuestion()
+                    return
+                }
                 // 答对 = 本轮清零开新一轮，和 Android 一致。不是「告诉你答案」。
                 if let rule = state.rule {
                     var fresh = GatePolicy.startNewCycle(afterCorrectAt: state.nowMs(), rule: rule)
@@ -817,7 +878,8 @@ final class AppModel: ObservableObject {
             graceMinutes: Int(snapshot.graceMinutes),
             enabled: snapshot.enabled,
             version: snapshot.version,
-            warningSeconds: Int(snapshot.gameMode.warningSeconds)
+            warningSeconds: Int(snapshot.gameMode.warningSeconds),
+            quizQuestionCount: Int(snapshot.quizQuestionCount)
         )
     }
 

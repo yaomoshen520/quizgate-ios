@@ -2,7 +2,7 @@ name: ios
 
 on:
   push:
-    branches: [main]
+    branches: [main, feature/nov20-ios]
   pull_request:
   workflow_dispatch:
 
@@ -190,6 +190,7 @@ jobs:
   # 证书、App Store、TestFlight 一概不碰。
   # ------------------------------------------------------------------
   ipa:
+    if: github.ref == 'refs/heads/main'
     needs: build-and-test
     runs-on: macos-15
     timeout-minutes: 40

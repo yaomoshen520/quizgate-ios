@@ -16,15 +16,17 @@ public struct RuleState: Codable, Equatable, Sendable {
     /// 否则同一份规则在两台机上提醒的时机不同。nil/0 = 这一档不提醒。
     /// 可选是为了让老 payload 缺键也能解出来（见 SharedState 那条 schemaVersion 注释）。
     public var warningSeconds: Int?
+    public var quizQuestionCount: Int?
 
     public init(thresholdMinutes: Int, dailyLimitMinutes: Int, graceMinutes: Int,
-                enabled: Bool, version: Int64, warningSeconds: Int? = nil) {
+                enabled: Bool, version: Int64, warningSeconds: Int? = nil, quizQuestionCount: Int? = nil) {
         self.thresholdMinutes = thresholdMinutes
         self.dailyLimitMinutes = dailyLimitMinutes
         self.graceMinutes = graceMinutes
         self.enabled = enabled
         self.version = version
         self.warningSeconds = warningSeconds
+        self.quizQuestionCount = quizQuestionCount
     }
 }
 

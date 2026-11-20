@@ -91,6 +91,7 @@ struct QuizView: View {
     private func content(_ question: Quizgate_Question) -> some View {
         ScrollView {
             VStack(alignment: .leading, spacing: Theme.Space.s4) {
+                Text("第 \(model.completedQuestions + 1) / \(model.roundTotal) 题").font(.headline)
                 // 答题这一屏也摆同一只：孩子被拦下来的那一刻能看见"是自家那只狐狸在出题"，
                 // 而不是一个陌生的系统弹窗。点它演一次走出去再回来，和 Android 那颗点击一样。
                 AvatarRigView(avatarId: model.state.avatarId ?? 0,
@@ -165,6 +166,9 @@ struct QuizView: View {
                             .strokeBorder(Theme.Palette.noteStroke, lineWidth: 1)
                     )
 
+                    if question.type == .objective, Int64(question.questionID).map({ $0 > 0 }) == true {
+                        ExplanationMedia(questionID: question.questionID)
+                    }
                     Button {
                         Task { await model.loadQuestion() }
                     } label: {
