@@ -28,9 +28,9 @@ public final class QuizGateAPI {
     private let base: String
     private let session: URLSession
 
-    public init(base: String) {
+    public init(base: String, configuration: URLSessionConfiguration = .default) {
         self.base = base.hasSuffix("/") ? String(base.dropLast()) : base
-        let config = URLSessionConfiguration.default
+        let config = configuration
         config.timeoutIntervalForRequest = 8
         config.timeoutIntervalForResource = 13
         config.waitsForConnectivity = false

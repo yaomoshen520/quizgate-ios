@@ -3,6 +3,7 @@ import QuizGateKit
 import SwiftProtobuf
 
 struct PetRoom: View {
+    var wardrobe: Bool = false
     @EnvironmentObject private var model: AppModel
     @Environment(\.dismiss) private var dismiss
     @State private var shop: Quizgate_PetStateReply?
@@ -22,7 +23,8 @@ struct PetRoom: View {
                         if let pet {
                             PetStage(pet: pet.rawValue, outfit: draft).frame(height: 240)
                         }
-                        Text("萌宠商城").font(.headline)
+                        if !wardrobe {
+                        Text("萌宠商店").font(.headline)
                         ForEach(shop.priceList, id: \.petID) { item in
                             HStack {
                                 Button(item.label) { preview(item.petID, shop) }
@@ -43,7 +45,13 @@ struct PetRoom: View {
                                 }
                             }
                         }
-                        if let pet {
+                        }
+                        if wardrobe {
+                            ScrollView(.horizontal) {
+                                HStack { ForEach(shop.priceList, id: \.petID) { item in Button(item.label) { preview(item.petID, shop) } } }
+                            }
+                        }
+                        if wardrobe, let pet {
                             Text("试衣间").font(.title2.bold())
                             ForEach(slots, id: \.self) { slot in
                                 VStack(alignment: .leading) {
@@ -82,7 +90,7 @@ struct PetRoom: View {
                     Button("刷新商城") { Task { await refresh() } }
                 }.disabled(working).padding().readableColumn()
             }
-            .navigationTitle("我的萌宠")
+            .navigationTitle(wardrobe ? "试衣间" : "萌宠商店")
             .toolbar { Button("完成") { dismiss() } }
         }
         .task { await refresh() }

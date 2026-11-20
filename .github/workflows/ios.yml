@@ -147,7 +147,7 @@ jobs:
           fi
           echo "udid=$UDID" >> "$GITHUB_OUTPUT"
 
-      - name: Test (pure logic only)
+      - name: Test child flows and capture simulator screens
         run: |
           set +e
           xcodebuild \
@@ -157,7 +157,7 @@ jobs:
             -destination 'platform=iOS Simulator,id=${{ steps.sim.outputs.udid }}' \
             -clonedSourcePackagesDirPath SourcePackages \
             CODE_SIGNING_ALLOWED=NO \
-            test > test.log 2>&1
+            -resultBundlePath SimulatorTests.xcresult test > test.log 2>&1
           status=$?
           # 同编译那步：整份日志直接刷进 CI 输出会被截断，先把诊断捞出来。
           grep -E "error:|failed|Test Suite|Executed .* tests|not currently loaded" test.log \
@@ -182,6 +182,17 @@ jobs:
           fi
           echo "TEST EXIT=$status"
           exit "$status"
+
+      - name: Export simulator screenshots
+        if: success()
+        run: |
+          xcrun xcresulttool export attachments --path SimulatorTests.xcresult --output-path Screens
+          find Screens -iname '*.png' | grep -q .
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: child-simulator-screens
+          path: Screens/*.png
 
   # ------------------------------------------------------------------
   # 真机 .ipa：给巨魔（TrollStore）侧载用。

@@ -22,6 +22,7 @@ final class AppModel: ObservableObject {
     @Published var activePet = 0
     @Published var wornOutfit = Quizgate_PetOutfit()
     private var localAnswer: Int?
+    private var quizTrace = ""
 
     // 答题养成：答对回包带回的积分/连对/等级/徽章，成功层显示。离线本地判分没有这一份（achievement=nil）。
     @Published var pointsEarned: Int32 = 0
@@ -81,7 +82,11 @@ final class AppModel: ObservableObject {
     /// 就一定已经过去了，该重配。ensureMonitoringArmed 用它判旧。
     private static let monitoringCycleHorizonMs: Int64 = 20 * 3_600_000
 
+    private let suppliedAPI: QuizGateAPI?
+    init(api: QuizGateAPI? = nil) { suppliedAPI = api }
+
     var api: QuizGateAPI? {
+        if let suppliedAPI { return suppliedAPI }
         guard let base = AppGroup.apiBase else { return nil }
         return QuizGateAPI(base: base)
     }
@@ -423,7 +428,10 @@ final class AppModel: ObservableObject {
     private var remoteStream: RemoteCommandStream?
     private func startRemoteStream() {
         remoteStream?.stop()
-        remoteStream = RemoteCommandStream { [weak self] in await self?.loadQuestion() }
+        remoteStream = RemoteCommandStream { [weak self] trace in
+            guard let self, !self.busy else { return }
+            await self.loadQuestion(commandTrace: trace)
+        }
         remoteStream?.start()
     }
 
@@ -450,6 +458,7 @@ final class AppModel: ObservableObject {
             state.deviceBound = reply.deviceBound
             activePet = reply.deviceBound && reply.ownedPetIds.contains(reply.activePetID) ? reply.activePetID.rawValue : 0
             wornOutfit = reply.petOutfit
+            AppGroup.defaults?.set(reply.logUploadMode.rawValue, forKey: "quizgate.logUploadMode")
             applyAvatar(reply.avatarID.rawValue)
             // 成就快照随心跳缓存：形象持久佩戴皇冠勋章，不必等答对那一跳（与安卓一致）。
             if reply.hasAchievement { achievement = reply.achievement }
@@ -474,6 +483,8 @@ final class AppModel: ObservableObject {
         } catch let error as ReportUnavailable {
             if error.needsReenroll {
                 state.deviceToken = nil
+                state.deviceBound = false
+                activePet = 0; achievement = nil
                 state.bindCode = nil
                 persist()
                 await enrollIfNeeded()
@@ -516,7 +527,9 @@ final class AppModel: ObservableObject {
         banner = "当前使用本机练习，联网后补报记录。"
     }
 
-    func loadQuestion() async {
+    func loadQuestion(commandTrace: String? = nil) async {
+        if let commandTrace { quizTrace = commandTrace }
+        else if question == nil || answeredCorrect { quizTrace = UUID().uuidString.lowercased() }
         if question == nil || answeredCorrect {
             completedQuestions = 0
             roundTotal = min(3, max(1, state.rule?.quizQuestionCount ?? 1))
@@ -525,6 +538,7 @@ final class AppModel: ObservableObject {
             banner = "还没登记到服务器，先连一次网络"
             return
         }
+        DiagLog.record("gate", "开始取题", trace: quizTrace)
         busy = true
         defer { busy = false }
         let exclude = state.ledger.lastQuestionId ?? ""
@@ -685,7 +699,7 @@ final class AppModel: ObservableObject {
                                + " correct=" + String(reply.correct)
                                + " shieldApplied=" + String(state.shieldApplied)
                                + " unlockUntil=" + String(state.ledger.unlockUntilMs ?? -1),
-                           level: reply.correct ? .info : .warn, nowMs: state.nowMs())
+                           level: reply.correct ? .info : .warn, nowMs: state.nowMs(), trace: quizTrace)
         } catch let error as ReportUnavailable {
             banner = error.message
         } catch {
@@ -722,15 +736,21 @@ final class AppModel: ObservableObject {
     /// 必须拿到回包里的 `accepted` 才知道从盘上删几行。删多了是丢现场，删少了是重传，
     /// 只有拿到计数才能选前者之外的路 —— 所以它只能活在一个等得到响应的进程里。
     private func flushLogs() async {
+        guard state.deviceBound, AppGroup.defaults?.integer(forKey: "quizgate.logUploadMode") != 3 else { return }
         guard let token = state.deviceToken, let api else { return }
         for batch in DiagLog.pendingBatches(totalLimit: DiagLog.batchLines) {
             var request = Quizgate_DeviceLogReportRequest()
+            request.platform = "ios"
+            request.appVersionCode = Int64(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "") ?? 0
+            request.romDisplay = "iOS " + UIDevice.current.systemVersion
             request.lines = batch.lines.map { line in
                 var out = Quizgate_DeviceLogLine()
                 out.occurredAtMs = line.occurredAtMs
                 out.level = line.level.proto
                 out.tag = line.tag
                 out.message = line.message
+                out.correlationID = line.trace
+                out.crashFingerprint = line.fingerprint
                 return out
             }
             guard !request.lines.isEmpty else { continue }
@@ -879,7 +899,7 @@ final class AppModel: ObservableObject {
             enabled: snapshot.enabled,
             version: snapshot.version,
             warningSeconds: Int(snapshot.gameMode.warningSeconds),
-            quizQuestionCount: Int(snapshot.quizQuestionCount)
+            quizQuestionCount: Int(snapshot.quizQuestionCount), hideSettings: snapshot.hideSettings
         )
     }
 

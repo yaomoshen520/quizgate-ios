@@ -1,4 +1,5 @@
 import SwiftUI
+import MetricKit
 import UserNotifications
 import QuizGateKit
 
@@ -60,6 +61,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
                      willFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
         // 注册要趁早：晚于启动完成，系统这一次交过来的唤醒就找不到 handler，
         // 表现成「task 来过又走了」，而这条通道本来就只在真机后台跑，本机永远看不见。
+        MXMetricManager.shared.add(CrashDiagnostics.shared)
         BackgroundRefresh.register { task in BackgroundRefresh.run(task) }
         BackgroundRefresh.scheduleNext()
         UNUserNotificationCenter.current().delegate = self

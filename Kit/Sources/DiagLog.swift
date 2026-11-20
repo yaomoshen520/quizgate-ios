@@ -61,16 +61,19 @@ public enum DiagLog {
         public var level: DiagLevel
         public var tag: String
         public var message: String
+        public var trace = ""
+        public var fingerprint = ""
 
         var json: [String: Any] {
-            ["t": occurredAtMs, "l": level.rawValue, "g": tag, "m": message]
+            ["t": occurredAtMs, "l": level.rawValue, "g": tag, "m": message, "c": trace, "f": fingerprint]
         }
 
         static func decode(_ object: [String: Any]) -> Line? {
             guard let stamp = object["t"] as? NSNumber,
                   let levelText = object["l"] as? String, let level = DiagLevel(rawValue: levelText),
                   let tag = object["g"] as? String, let message = object["m"] as? String else { return nil }
-            return Line(occurredAtMs: stamp.int64Value, level: level, tag: tag, message: message)
+            return Line(occurredAtMs: stamp.int64Value, level: level, tag: tag, message: message,
+                        trace: object["c"] as? String ?? "", fingerprint: object["f"] as? String ?? "")
         }
     }
 
@@ -78,9 +81,12 @@ public enum DiagLog {
 
     /// 记一行。调用点只写「发生了什么 + 关键数字」，不要贴整段上下文：
     /// 上下文里的令牌要靠 sanitize 兜，那是第二道而不是第一道。
-    public static func record(_ tag: String, _ message: String, level: DiagLevel = .info, nowMs: Int64? = nil) {
+    public static func record(_ tag: String, _ message: String, level: DiagLevel = .info, nowMs: Int64? = nil,
+                              trace: String = "", fingerprint: String = "") {
+        let mode = AppGroup.defaults?.integer(forKey: "quizgate.logUploadMode") ?? 0
+        if mode == 3 || mode == 2 && level != .error || mode == 1 && level == .info { return }
         let line = Line(occurredAtMs: nowMs ?? Int64(Date().timeIntervalSince1970 * 1000),
-                        level: level, tag: tag, message: sanitize(message))
+                        level: level, tag: tag, message: sanitize(message), trace: trace, fingerprint: fingerprint)
         // best-effort：这里任何失败都不能冒到调用方。
         try? queue.sync { try append(line) }
     }

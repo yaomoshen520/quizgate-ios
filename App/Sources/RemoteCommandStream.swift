@@ -12,9 +12,9 @@ import QuizGateKit
 @MainActor
 final class RemoteCommandStream {
     private var task: Task<Void, Never>?
-    private let onQuizNow: () async -> Void
+    private let onQuizNow: (String) async -> Void
 
-    init(onQuizNow: @escaping () async -> Void) {
+    init(onQuizNow: @escaping (String) async -> Void) {
         self.onQuizNow = onQuizNow
     }
 
@@ -84,8 +84,10 @@ final class RemoteCommandStream {
               let object = try? JSONSerialization.jsonObject(with: Data(data.utf8)) as? [String: Any],
               let kind = object["kind"] as? String else { return }
         if kind == "quiz-now" {
-            DiagLog.record("remote", "收到远程命令：quiz-now")
-            await onQuizNow()
+            let number = (object["id"] as? NSNumber)?.int64Value ?? 0
+            let trace = number > 0 ? "cmd-\(number)" : UUID().uuidString.lowercased()
+            DiagLog.record("remote", "收到远程命令：quiz-now", trace: trace)
+            await onQuizNow(trace)
         }
     }
 }

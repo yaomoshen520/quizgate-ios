@@ -11,6 +11,10 @@ struct HomeView: View {
     @Environment(\.horizontalSizeClass) private var horizontalSize
     @State private var showDebug = false
     @State private var showPets = false
+    @State private var wardrobe = false
+    @State private var showSettings = false
+    @State private var motion = ""
+    @State private var motionTick = 0
 
     /// 宽屏 = iPad（以及 iPad 上的全屏分栏）。判据只有这一处：
     /// 首页、答题页共用同一个 `wide`，两屏的排版才不会一个两列一个单列。
@@ -30,21 +34,28 @@ struct HomeView: View {
                     if let banner = model.banner {
                         BannerView(text: banner, tone: .danger)
                     }
-                    statusHero
-                    // iOS 没有无障碍服务替孩子把答题页顶到最前，落盾之后这一屏就是唯一的出口，
-                    // 所以这颗按钮是 iOS 独有的第六块——它占的正是 Android 自动抢屏那一格。
+                    HStack {
+                        Text("我的萌宠").font(.largeTitle.bold())
+                        Spacer()
+                        if !model.state.deviceBound || model.state.rule?.hideSettings != true {
+                            Button { showSettings = true } label: { Image(systemName: "gearshape") }
+                                .accessibilityLabel("设备设置")
+                        }
+                    }
                     if model.state.shieldApplied { answerCard }
-                    if model.state.deviceBound {
-                        Button("萌宠商城与试衣间") { showPets = true }.buttonStyle(PrimaryButtonStyle())
+                    ViewThatFits(in: .horizontal) {
+                        HStack(spacing: Theme.Space.s4) {
+                            petStage.frame(minWidth: 300)
+                            petInfo.frame(minWidth: 260)
+                        }
+                        VStack(alignment: .leading, spacing: Theme.Space.s3) { petStage; petInfo }
                     }
                     countdownCard
-                    LazyVGrid(columns: cardGridColumns(wide: wide), alignment: .leading,
-                              spacing: Theme.Space.s4) {
-                        permissionCard
-                        faultCard
-                    }
+                    HStack {
+                        Button("试衣间") { wardrobe = true; showPets = true }
+                        Button("萌宠商店") { wardrobe = false; showPets = true }
+                    }.buttonStyle(PrimaryButtonStyle()).disabled(!model.state.deviceBound)
                     if !model.state.deviceBound { bindCard }
-                    footer
                     #if DEBUG
                     if showDebug { shieldDebugCard }
                     #endif
@@ -53,7 +64,43 @@ struct HomeView: View {
                 .readableColumn()
             }
         }
-        .sheet(isPresented: $showPets) { PetRoom().environmentObject(model) }
+        .sheet(isPresented: $showPets, onDismiss: { Task { await model.heartbeat() } }) {
+            PetRoom(wardrobe: wardrobe).environmentObject(model)
+        }
+        .sheet(isPresented: $showSettings) {
+            NavigationStack {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: Theme.Space.s4) {
+                        statusHero; permissionCard; faultCard; bindCard; footer
+                    }.padding().readableColumn()
+                }.navigationTitle("设备设置").toolbar { Button("完成") { showSettings = false } }
+            }
+        }
+    }
+
+    @ViewBuilder private var petStage: some View {
+        if model.state.deviceBound && model.activePet > 0 {
+            PetStage(pet: model.activePet, outfit: model.wornOutfit, motion: motion, tick: motionTick)
+                .frame(height: 260)
+        } else {
+            Text(model.state.deviceBound ? "还没有佩戴萌宠，去商店看看吧。" : "绑定家长后即可查看萌宠。")
+                .frame(maxWidth: .infinity, minHeight: 150).card()
+        }
+    }
+    private var petInfo: some View {
+        VStack(alignment: .leading, spacing: Theme.Space.s2) {
+            if let achievement = model.achievement, model.state.deviceBound {
+                Text("Lv\(achievement.level) \(achievement.levelTitle) · \(achievement.points) 积分")
+                if !achievement.badges.isEmpty { Text(achievement.badges.joined(separator: " · ")).font(.caption) }
+            }
+            if model.activePet > 0 {
+                Text("拖动萌宠旋转，点下方按钮互动").font(.caption)
+                HStack { motionButton("挥手", "wave"); motionButton("跳跃", "jump"); motionButton("跳舞", "dance"); motionButton("转圈", "spin") }
+            }
+        }.frame(maxWidth: .infinity, alignment: .leading)
+    }
+    private func motionButton(_ label: String, _ action: String) -> some View {
+        Button(label) { motion = action; motionTick += 1 }
     }
 
     private var statusHero: some View {
