@@ -80,6 +80,40 @@ private final class FixtureProtocol: URLProtocol {
         XCTAssertTrue(model.answeredCorrect)
     }
 
+    private func stage(in view: UIView) -> WKWebView? {
+        if let web = view as? WKWebView { return web }
+        for child in view.subviews { if let web = stage(in: child) { return web } }
+        return nil
+    }
+
+    private func renderedStage(in window: UIWindow) async throws -> (UIImage, CGRect) {
+        var diagnostic = "stage view missing"
+        for _ in 0..<70 {
+            if let web = stage(in: window) {
+                let probe = """
+                (() => {
+                  if (!window.PetApp || !PetApp.inspect) return document.readyState + '/' + typeof window.THREE + '/' + typeof window.PetApp;
+                  const state = PetApp.inspect();
+                  if (state.species !== PetConfig.speciesForId(2) || state.outfit.hand !== 'balloon' || !state.petMeshes)
+                    return JSON.stringify([state.species,state.outfit.hand,state.petMeshes]);
+                  return PetApp.capture();
+                })()
+                """
+                if let value = try? await web.evaluateJavaScript(probe) as? String {
+                    let prefix = "data:image/png;base64,"
+                    if value.hasPrefix(prefix), let data = Data(base64Encoded: String(value.dropFirst(prefix.count))),
+                       let image = UIImage(data: data), image.size.width > 40 {
+                        return (image, web.convert(web.bounds, to: window))
+                    }
+                    diagnostic = String(value.prefix(120))
+                }
+            }
+            try await Task.sleep(nanoseconds: 250_000_000)
+        }
+        throw NSError(domain: "PetStage", code: 1,
+                      userInfo: [NSLocalizedDescriptionKey: "Equipped 3D pet failed to render: " + diagnostic])
+    }
+
     private func screenshot<V: View>(_ view: V, name: String) async throws {
         let host = UIHostingController(rootView: NavigationStack { view })
         let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
@@ -90,8 +124,11 @@ private final class FixtureProtocol: URLProtocol {
         host.view.frame = window.bounds
         host.view.layoutIfNeeded()
         try await Task.sleep(nanoseconds: 900_000_000)
+        // WebKit draws WebGL in another process. Capture that live framebuffer after checking the outfit.
+        let pet = name == "quiz" ? nil : try await renderedStage(in: window)
         let image = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in
             window.drawHierarchy(in: window.bounds, afterScreenUpdates: true)
+            if let (frame, rect) = pet { frame.draw(in: rect) }
         }
         let cgImage = try XCTUnwrap(image.cgImage)
         var pixels = [UInt8](repeating: 0, count: 48 * 88 * 4)

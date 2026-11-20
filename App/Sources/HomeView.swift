@@ -50,9 +50,13 @@ struct HomeView: View {
                     }
                     countdownCard
                     HStack {
-                        Button(Theme.Copy.homePetRoom) { wardrobe = true; showPets = true }
-                        Button(Theme.Copy.petShopTitle) { wardrobe = false; showPets = true }
-                    }.buttonStyle(PrimaryButtonStyle()).disabled(!model.state.deviceBound)
+                        Button { wardrobe = true; showPets = true } label: {
+                            Text(Theme.Copy.homePetRoom).frame(maxWidth: .infinity, minHeight: 48)
+                        }
+                        Button { wardrobe = false; showPets = true } label: {
+                            Text(Theme.Copy.petShopTitle).frame(maxWidth: .infinity, minHeight: 48)
+                        }
+                    }.buttonStyle(PrimaryButtonStyle(disabled: !model.state.deviceBound)).disabled(!model.state.deviceBound)
                     if model.state.deviceBound && !model.state.shieldApplied { answerCard }
                     if !model.state.deviceBound { bindCard }
                     #if DEBUG

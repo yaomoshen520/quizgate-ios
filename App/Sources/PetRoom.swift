@@ -51,7 +51,7 @@ struct PetRoom: View {
                             }
                         }
                         if wardrobe, let pet {
-                            Text("试衣间").font(.title2.bold())
+                            Text("装扮槽位").font(.title2.bold())
                             ForEach(slots, id: \.self) { slot in
                                 VStack(alignment: .leading) {
                                     Text(titles[slot] ?? slot).font(.headline)
@@ -71,7 +71,7 @@ struct PetRoom: View {
                                             }
                                         }
                                     }
-                                }.card()
+                                }.frame(maxWidth: .infinity, alignment: .leading).card()
                             }
                             Button("保存装扮") {
                                 var request = Quizgate_SavePetOutfitRequest()
@@ -87,8 +87,9 @@ struct PetRoom: View {
                     if !note.isEmpty { Text(note).accessibilityLabel(note) }
                     if working { ProgressView() }
                     Button("刷新商城") { Task { await refresh() } }
-                }.disabled(working).padding().readableColumn()
+                }.frame(maxWidth: .infinity, alignment: .leading).disabled(working).padding().readableColumn()
             }
+            .background(Theme.Palette.petPage.ignoresSafeArea())
             .navigationTitle(wardrobe ? "试衣间" : "萌宠商店")
             .toolbar { Button("完成") { dismiss() } }
         .task { await refresh() }
