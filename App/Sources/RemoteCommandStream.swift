@@ -14,8 +14,12 @@ final class RemoteCommandStream {
     private var task: Task<Void, Never>?
     private let onQuizNow: (String) async -> Void
 
-    init(onQuizNow: @escaping (String) async -> Void) {
+    private let onRuleChange: () async -> Void
+    private var lastCommand: Int64 = 0
+
+    init(onQuizNow: @escaping (String) async -> Void, onRuleChange: @escaping () async -> Void) {
         self.onQuizNow = onQuizNow
+        self.onRuleChange = onRuleChange
     }
 
     func start() {
@@ -88,15 +92,20 @@ final class RemoteCommandStream {
         }
     }
 
-    private func dispatch(eventType: String, data: String) async {
+    func dispatch(eventType: String, data: String) async {
+        if eventType == "rule-change" {
+            await onRuleChange()
+            return
+        }
         guard eventType == "command",
               let object = try? JSONSerialization.jsonObject(with: Data(data.utf8)) as? [String: Any],
-              let kind = object["kind"] as? String else { return }
-        if kind == "quiz-now" {
-            let number = (object["id"] as? NSNumber)?.int64Value ?? 0
-            let trace = number > 0 ? "cmd-\(number)" : UUID().uuidString.lowercased()
-            DiagLog.record("remote", "收到远程命令：quiz-now", trace: trace)
-            await onQuizNow(trace)
-        }
+              object["kind"] as? String == "quiz-now" else { return }
+        // Java sends long identifiers as decimal strings to preserve precision in clients.
+        let raw = (object["id"] as? String) ?? (object["id"] as? NSNumber)?.stringValue ?? ""
+        guard let id = Int64(raw), id > lastCommand, String(id) == raw else { return }
+        lastCommand = id
+        let trace = "cmd-" + raw
+        DiagLog.record("remote", "收到远程命令：quiz-now", trace: trace)
+        await onQuizNow(trace)
     }
 }

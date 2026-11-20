@@ -54,6 +54,18 @@ private final class FixtureProtocol: URLProtocol {
         return model
     }
 
+    func testRemoteActionsMatchServerEventFormat() async {
+        var traces = [String]()
+        var refreshes = 0
+        let stream = RemoteCommandStream(onQuizNow: { traces.append($0) }, onRuleChange: { refreshes += 1 })
+        let data = #"{"kind":"quiz-now","id":"9007199254740993"}"#
+        await stream.dispatch(eventType: "command", data: data)
+        await stream.dispatch(eventType: "command", data: data)
+        await stream.dispatch(eventType: "rule-change", data: #"{"version":"3"}"#)
+        XCTAssertEqual(traces, ["cmd-9007199254740993"])
+        XCTAssertEqual(refreshes, 1)
+    }
+
     func testThreeCorrectAnswersBeforeRelease() async {
         let model = model()
         await model.loadQuestion()

@@ -429,10 +429,14 @@ final class AppModel: ObservableObject {
     private var remoteStream: RemoteCommandStream?
     private func startRemoteStream() {
         remoteStream?.stop()
-        remoteStream = RemoteCommandStream { [weak self] trace in
-            guard let self, !self.busy else { return }
+        remoteStream = RemoteCommandStream(onQuizNow: { [weak self] trace in
+            guard let self else { return }
+            while self.busy && !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 100_000_000)
+            }
+            guard !Task.isCancelled, self.state.deviceBound else { return }
             await self.loadQuestion(commandTrace: trace)
-        }
+        }, onRuleChange: { [weak self] in await self?.heartbeat() })
         remoteStream?.start()
     }
 
@@ -685,7 +689,7 @@ final class AppModel: ObservableObject {
                 answeredCorrect = true
                 explanation = nil
                 pointsEarned = reply.pointsEarned
-                achievement = reply.hasAchievement ? reply.achievement : nil
+                if reply.hasAchievement { achievement = reply.achievement }
                 newBadges = reply.newBadges
                 reconcileShield()
                 reconfigureMonitoring()
